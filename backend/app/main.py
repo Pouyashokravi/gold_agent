@@ -49,4 +49,10 @@ app.include_router(market.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "openai_configured": bool(settings.openai_api_key),
+        "twelve_data_configured": bool(settings.twelve_data_api_key),
+        "fred_configured": bool(settings.fred_api_key),
+        "tavily_configured": bool(settings.tavily_api_key),
+    }

@@ -161,6 +161,10 @@ def _has_critical_surprise(specialist_outputs: dict[str, Any]) -> bool:
 
 
 async def _run_agent(agent, user_input: str, max_retries: int = 1) -> Any:
+    if not settings.openai_api_key:
+        raise RuntimeError(
+            "OpenAI API key is not configured. Set OPENAI_API_KEY in the backend environment."
+        )
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:

@@ -53,7 +53,11 @@ Share the **frontend URL** with testers.
    - `TWELVE_DATA_API_KEY`
    - `FRED_API_KEY`
    - `TAVILY_API_KEY`
-5. Wait for both services to deploy. Verify backend: `GET /health` → `{"status":"ok"}`.
+5. Wait for both services to deploy. Verify backend health:
+
+   `GET https://gold-agent-api.onrender.com/health`
+
+   Should include `"openai_configured": true` (and other keys). If `false`, add the missing env var on **gold-agent-api** and redeploy.
 
 ### Free tier notes for testers
 
