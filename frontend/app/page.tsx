@@ -29,6 +29,7 @@ export default function Home() {
     technical: true,
   });
   const [statusMessage, setStatusMessage] = useState("");
+  const [chatMode, setChatMode] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -97,6 +98,7 @@ export default function Home() {
     setStreamText("");
     setSynthesis(null);
     setCompleted(new Set());
+    setChatMode(false);
     setActiveStep("understanding");
     setStatusMessage("Understanding your query...");
 
@@ -105,6 +107,12 @@ export default function Home() {
 
     try {
       await analyzeStream(query, conversationId, tradeMode, (event: StreamEvent) => {
+        if (event.type === "chat_response") {
+          setChatMode(true);
+          setActiveStep("");
+          setStatusMessage("");
+          return;
+        }
         markStep(event.type);
         if (event.message) setStatusMessage(event.message);
         if (event.type === "answer_delta" && event.data?.delta) {
@@ -208,7 +216,7 @@ export default function Home() {
           <AgentStatus
             activeStep={activeStep}
             completed={completed}
-            visible={streaming}
+            visible={streaming && !chatMode}
             statusMessage={statusMessage}
             enabledAgents={enabledAgents}
           />

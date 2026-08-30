@@ -34,7 +34,14 @@ from app.services.fundamental_fallback import build_fundamental_fallback
 from app.services.news_fallback import build_news_fallback
 from app.services.technical_fallback import build_technical_fallback
 from app.services.freshness import classify_freshness
-from app.services.policy import apply_horizon_overrides, apply_intent_overrides, apply_routing_overrides, apply_trade_mode_overrides, validate_plan
+from app.services.policy import (
+    apply_horizon_overrides,
+    apply_intent_overrides,
+    apply_routing_overrides,
+    apply_trade_mode_overrides,
+    is_casual_query,
+    validate_plan,
+)
 from app.services.agent_conflict import ConflictType, analyze_agent_relations, max_direction_conflict_severity
 from app.services.chart_levels import resolve_technical_chart_output
 from app.services.economic_surprise import enrich_news_event
@@ -432,6 +439,62 @@ def _detect_response_language(query: str) -> str:
     return "fa" if persian > max(3, len(query) * 0.12) else "en"
 
 
+def _casual_response(query: str) -> str:
+    lang = _detect_response_language(query)
+    q = query.strip().lower()
+
+    if lang == "fa":
+        if any(t in q for t in ("ممنون", "متشکر", "مرسی", "سپاس", "thank")):
+            return (
+                "خواهش می‌کنم! اگر سوالی دربارهٔ طلا (XAU/USD) دارید — "
+                "مثلاً قیمت، تحلیل تکنیکال، فاندامنتال یا اخبار — بپرسید."
+            )
+        if any(m in q for m in ("چیکار", "چه کاری", "کی هست", "معرفی")):
+            return (
+                "من Gold Agent هستم — دستیار تحلیل طلا (XAU/USD).\n\n"
+                "می‌توانم دربارهٔ قیمت، روند بازار، تحلیل تکنیکال، "
+                "فاکتورهای فاندامنتال (نرخ بهره، دلار، تورم) و اخبار مهم طلا کمک کنم.\n\n"
+                "یک سوال بپرسید، مثلاً: «وضعیت طلا امروز چطوره؟»"
+            )
+        return (
+            "سلام! من Gold Agent هستم — دستیار تحلیل طلا (XAU/USD).\n\n"
+            "دربارهٔ قیمت، تحلیل تکنیکال، فاندامنتال یا اخبار طلا بپرسید."
+        )
+
+    if any(t in q for t in ("thank", "thx", "ty", "cheers")):
+        return (
+            "You're welcome! Ask me anything about XAU/USD gold — "
+            "price, outlook, technicals, fundamentals, or news."
+        )
+    if any(m in q for m in ("who are you", "what are you", "what can you", "what do you", "help", "introduce")):
+        return (
+            "I'm Gold Agent — your XAU/USD gold research assistant.\n\n"
+            "I can analyze price, market outlook, technical levels, "
+            "fundamental drivers (rates, USD, inflation), and relevant news.\n\n"
+            "Try asking: \"What's the gold outlook today?\""
+        )
+    return (
+        "Hello! I'm Gold Agent — your XAU/USD gold research assistant.\n\n"
+        "Ask me about gold price, technical analysis, fundamentals, or news."
+    )
+
+
+async def _stream_text_answer(
+    text: str,
+    conversation_id: str,
+    query: str,
+    emit: EmitFn,
+    metadata: dict | None = None,
+) -> None:
+    await emit(_sse("answer_started", "answer", "Responding"))
+    chunk_size = 80
+    for i in range(0, len(text), chunk_size):
+        await emit(_sse("answer_delta", "answer", data={"delta": text[i:i + chunk_size]}))
+    await emit(_sse("answer_completed", "answer", "Done", {"answer": text}))
+    await repositories.add_message(conversation_id, "user", query)
+    await repositories.add_message(conversation_id, "assistant", text, metadata or {})
+
+
 async def run_pipeline(
     query: str,
     conversation_id: str,
@@ -446,6 +509,16 @@ async def run_pipeline(
         request_id = str(uuid.uuid4())
         try:
             await emit(_sse("query_received", message="Query received", data={"request_id": request_id}))
+
+            if is_casual_query(query):
+                await emit(_sse("chat_response", message="Casual chat"))
+                await _stream_text_answer(
+                    _casual_response(query),
+                    conversation_id,
+                    query,
+                    emit,
+                )
+                return
 
             history = await repositories.get_messages(conversation_id, limit=8)
             history_text = "\n".join(f"{m['role']}: {m['content']}" for m in history)
