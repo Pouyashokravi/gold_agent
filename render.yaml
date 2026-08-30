@@ -16,6 +16,8 @@ services:
         sync: false
       - key: TAVILY_API_KEY
         sync: false
+      - key: OPENAI_AGENTS_DISABLE_TRACING
+        value: "1"
       - key: DATABASE_URL
         value: sqlite:///./gold_agent.db
       - key: CORS_ORIGINS

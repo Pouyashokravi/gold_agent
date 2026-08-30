@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -46,6 +47,16 @@ class Settings(BaseSettings):
     cache_ohlc_daily_ttl: int = 1800
     cache_fred_ttl: int = 3600
     cache_tavily_ttl: int = 1200
+
+    @field_validator(
+        "openai_api_key",
+        "twelve_data_api_key",
+        "fred_api_key",
+        "tavily_api_key",
+    )
+    @classmethod
+    def strip_secrets(cls, value: str) -> str:
+        return value.strip()
 
 
 settings = Settings()

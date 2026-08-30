@@ -175,7 +175,13 @@ async def _run_agent(agent, user_input: str, max_retries: int = 1) -> Any:
             return result.final_output
         except Exception as exc:
             last_exc = exc
-            logger.warning("Agent %s failed attempt %d: %s", agent.name, attempt + 1, exc)
+            logger.warning(
+                "Agent %s failed attempt %d (%s): %s",
+                agent.name,
+                attempt + 1,
+                type(exc).__name__,
+                exc,
+            )
     raise last_exc or RuntimeError("Agent failed")
 
 
