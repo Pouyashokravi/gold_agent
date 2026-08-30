@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --sidebar: #171717;
+  --sidebar-hover: #2f2f2f;
+  --main: #212121;
+  --muted: #2f2f2f;
+  --surface: #2f2f2f;
+  --border: #444444;
+  --text: #ececec;
+  --text-secondary: #9b9b9b;
+  --user-bubble: #2f2f2f;
+  --accent: #d1d1d1;
+  --up: #10b981;
+  --down: #ef4444;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Söhne", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background: var(--main);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #5a5a5a;
+}
+
+@keyframes pulse-dot {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+.typing-dot {
+  animation: pulse-dot 1.4s infinite ease-in-out both;
+}
+.typing-dot:nth-child(1) { animation-delay: -0.32s; }
+.typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+.markdown-body {
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.toggle-track {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 9999px;
+  background: #444444;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+.toggle-track[data-on="true"] {
+  background: #ececec;
+}
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #171717;
+  transition: transform 0.15s ease;
+}
+.toggle-track[data-on="true"] .toggle-thumb {
+  transform: translateX(16px);
+}

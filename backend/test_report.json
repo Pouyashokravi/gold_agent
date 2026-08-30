@@ -1,0 +1,77 @@
+{
+  "summary": {
+    "total": 3,
+    "passed": 1,
+    "failed": 2
+  },
+  "results": [
+    {
+      "id": 5,
+      "name": "Fed multi-horizon event",
+      "query": "How would an unexpected 50 basis point Federal Reserve rate cut affect XAU/USD in the intraday, short-term, and medium-term horizons?",
+      "success": false,
+      "horizon": "medium_term",
+      "intents": [
+        "market_outlook",
+        "market_move_explanation",
+        "event_impact",
+        "fundamental_analysis"
+      ],
+      "agents": {
+        "news": true,
+        "fundamental": true,
+        "technical": true
+      },
+      "issues": [
+        "Answer missing expected phrase: 'fed'",
+        "Answer missing expected phrase: 'rate'"
+      ],
+      "warnings": [],
+      "answer_preview": "XAU/USD دیدگاه: صعودی  \nجهت: میان‌مدت  \nاعتماد: 78%  \nافق زمانی: میان‌مدت  \n\nالف. فرض پایه:\n- سمت‌گیری کلی: صعودی\n- عوامل محرک: کاهش نرخ بهره توسط فدرال رزرو، کاهش ارزش دلار آمریکا، تورم متوسط و حمایت سرمایه‌گذاران از دارایی‌های امن بدون بهره مانند طلا.\n\nب. حالت خوش‌بینانه (Bull Case):\n- شدت‌بخشی به سیاست‌های انبساطی فدرال رزرو، تورم بالای هدف، تضعیف بیشتر دلار و نگرانی‌های ژئوپولیتیکی یا اقتصاد کلان که تقاضا برای پناهگاه امن را افزایش می‌دهد.\n\nج. حالت بدبینانه (Bear Case):\n- قدرت بیش از حد بازا",
+      "error": null
+    },
+    {
+      "id": 13,
+      "name": "Historical analysis",
+      "query": "How did gold perform during the 2020 pandemic crash?",
+      "success": true,
+      "horizon": "ages",
+      "intents": [
+        "historical_analysis"
+      ],
+      "agents": {
+        "news": true,
+        "fundamental": true,
+        "technical": true
+      },
+      "issues": [],
+      "warnings": [],
+      "answer_preview": "**View of Gold (XAU/USD):**  \nدر طول بحران پاندمی 2020، طلا عملکردی قوی و صعودی داشت.\n\n**Direction:**  \nBullish (صعودی)\n\n**Confidence:**  \n0.83 (83%)\n\n**Horizon:**  \nAges (بلندمدت)\n\n**Main Thesis:**  \nطلا در دوران بحران کووید-19 به دلیل عوامل زیادی همچون ریسک‌های اقتصای، سیاست‌های حمایتی بی‌سابقه بانک‌های مرکزی، و نقش آن به عنوان دارایی امن، نسبت به نوسانات کوتاه‌مدت، روندی صعودی را به نمایش گذاشت.\n\n**Key Drivers:**  \n- رکود اقتصادی ناشی از پاندمی و عدم قطعیت‌های اقتصادی  \n- سیاست‌های تسهیل پولی",
+      "error": null
+    },
+    {
+      "id": 19,
+      "name": "CPI event impact",
+      "query": "What would happen to gold if CPI comes in much hotter than expected?",
+      "success": false,
+      "horizon": "few_days",
+      "intents": [
+        "fundamental_analysis",
+        "news_analysis",
+        "market_move_explanation",
+        "event_impact"
+      ],
+      "agents": {
+        "news": true,
+        "fundamental": true,
+        "technical": true
+      },
+      "issues": [
+        "Answer missing expected phrase: 'inflation'"
+      ],
+      "warnings": [],
+      "answer_preview": "**پیشنهاد تحلیل درصد طلای XAU/USD**\n\n**دیدگاه کلی:**  \nدر بلندمدت، تأثیر بر قیمت طلا پس از اعلام CPI بسیار داغ‌تر از انتظار اغلب به سمت نزول است، زیرا نگرانی‌های تورمی بیشتر و افزایش نرخ بهره فدرال رزرو به کاهش جذابیت طلا می‌انجامد.\n\n**جهت‌گیری:**  \n- در کوتاه‌مدت (چند روز آینده): روند غالب نزولی است، با اطمینان حدود 75%.  \n- عوامل اصلی:  \n  - داده‌های CPI داغ‌تر از انتظار باعث افزایش نگرانی‌های تورمی می‌شود.  \n  - افزایش سود اوراق خزانه‌داری آمریکا و تقویت دلار آمریکا.  \n  - انتظارات بازار برای",
+      "error": null
+    }
+  ]
+}

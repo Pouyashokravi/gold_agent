@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: gold-agent-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: TWELVE_DATA_API_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        value: sqlite:///./gold_agent.db
+      - key: CORS_ORIGINS
+        value: https://gold-agent-web.onrender.com
+      - key: QUERY_MODEL
+        value: gpt-4.1-nano
+      - key: PLANNER_MODEL
+        value: gpt-4.1-mini
+      - key: SPECIALIST_MODEL
+        value: gpt-4.1-mini
+      - key: SYNTHESIS_MODEL
+        value: gpt-4.1-mini
+      - key: ANSWER_MODEL
+        value: gpt-4.1-nano
+      - key: TAVILY_ENABLED
+        value: "true"
+      - key: TAVILY_MONTHLY_BUDGET
+        value: "900"
+      - key: TAVILY_SEARCH_DEPTH
+        value: basic
+      - key: TAVILY_MAX_RESULTS
+        value: "8"
+      - key: MOCK_EXTERNAL_APIS
+        value: "false"
+
+  - type: web
+    name: gold-agent-web
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        value: https://gold-agent-api.onrender.com
