@@ -1,6 +1,7 @@
 "use client";
 
 const STEPS = [
+  { id: "routing", label: "Routing", agentKey: null },
   { id: "understanding", label: "Understanding", agentKey: null },
   { id: "planning", label: "Planning", agentKey: null },
   { id: "news_agent", label: "News", agentKey: "news" },

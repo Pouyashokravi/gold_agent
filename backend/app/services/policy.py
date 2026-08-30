@@ -46,25 +46,6 @@ TRADE_KEYWORDS = (
     "ورود", "خرید", "فروش", "پوزیشن", "استاپ", "تارگت",
 )
 
-CASUAL_GREETINGS = (
-    "hello", "hi", "hey", "howdy", "good morning", "good afternoon", "good evening",
-    "greetings", "what's up", "whats up", "sup", "yo",
-    "سلام", "درود", "صبح بخیر", "عصر بخیر", "شب بخیر",
-)
-
-CASUAL_THANKS = (
-    "thanks", "thank you", "thx", "ty", "cheers",
-    "متشکر", "ممنون", "مرسی", "سپاس",
-)
-
-CASUAL_META = (
-    "who are you", "what are you", "what can you do", "what do you do",
-    "introduce yourself", "help me", "help",
-    "تو کی هستی", "کی هستی", "چیکار میکنی", "چه کاری", "معرفی",
-)
-
-CASUAL_ACK = ("ok", "okay", "k", "got it", "cool", "nice", "بله", "نه", "باشه")
-
 GOLD_KEYWORDS = (
     "gold", "xau", "usd", "price", "trade", "buy", "sell", "fed", "rate",
     "technical", "fundamental", "news", "outlook", "analysis", "chart",
@@ -80,49 +61,9 @@ def _normalize_query_for_keywords(query: str) -> str:
     return q
 
 
-def _normalize_casual(query: str) -> str:
-    q = query.strip().lower()
-    for ch in "?!.,؛!":
-        q = q.replace(ch, "")
-    return q.strip()
-
-
 def _contains_gold_keyword(query: str) -> bool:
     q = query.lower()
     return any(k in q for k in GOLD_KEYWORDS)
-
-
-def is_casual_query(query: str) -> bool:
-    """Return True for greetings, thanks, and meta chat — not research requests."""
-    q = _normalize_casual(query)
-    if not q:
-        return False
-    if _contains_gold_keyword(query):
-        return False
-
-    all_exact = CASUAL_GREETINGS + CASUAL_THANKS + CASUAL_ACK
-    if q in all_exact:
-        return True
-
-    for greeting in CASUAL_GREETINGS:
-        if q == greeting or q.startswith(greeting + " "):
-            rest = q[len(greeting):].strip()
-            if not rest or rest in ("there", "everyone", "friend", "gold agent", "agent"):
-                return True
-
-    raw_lower = query.lower()
-    if any(m in raw_lower for m in CASUAL_META):
-        return True
-
-    words = q.split()
-    if len(words) <= 2:
-        casual_vocab: set[str] = set()
-        for phrase in CASUAL_GREETINGS + CASUAL_THANKS + CASUAL_ACK:
-            casual_vocab.update(phrase.split())
-        if words and all(w in casual_vocab for w in words):
-            return True
-
-    return False
 
 
 def _query_intents(profile: QueryUnderstandingOutput) -> set[Intent]:

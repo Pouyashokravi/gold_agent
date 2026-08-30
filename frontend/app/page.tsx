@@ -66,6 +66,7 @@ export default function Home() {
 
   const markStep = useCallback((type: string) => {
     const startMap: Record<string, string> = {
+      routing_started: "routing",
       understanding_started: "understanding",
       planning_started: "planning",
       news_agent_started: "news_agent",
@@ -75,6 +76,7 @@ export default function Home() {
       answer_started: "answer",
     };
     const doneMap: Record<string, string> = {
+      routing_completed: "routing",
       understanding_completed: "understanding",
       planning_completed: "planning",
       news_agent_completed: "news_agent",
@@ -99,8 +101,8 @@ export default function Home() {
     setSynthesis(null);
     setCompleted(new Set());
     setChatMode(false);
-    setActiveStep("understanding");
-    setStatusMessage("Understanding your query...");
+    setActiveStep("routing");
+    setStatusMessage("Classifying your message...");
 
     abortRef.current = new AbortController();
     let answer = "";

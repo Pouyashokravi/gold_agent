@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     synthesis_model: str = "gpt-4.1-mini"
     answer_model: str = "gpt-4.1-nano"
 
-    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    cors_origins: str = (
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://localhost:3001,http://127.0.0.1:3001"
+    )
 
     tavily_enabled: bool = True
     tavily_monthly_budget: int = 900

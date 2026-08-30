@@ -6,7 +6,6 @@ from app.services.policy import (
     apply_horizon_overrides,
     apply_intent_overrides,
     apply_routing_overrides,
-    is_casual_query,
 )
 
 
@@ -86,18 +85,3 @@ def test_real_trade_query_still_routes_technical_only():
     assert plan.technical_agent.enabled is True
     assert plan.news_agent.enabled is False
     assert plan.fundamental_agent.enabled is False
-
-
-def test_casual_greetings_detected():
-    assert is_casual_query("hello") is True
-    assert is_casual_query("hi there") is True
-    assert is_casual_query("سلام") is True
-    assert is_casual_query("thanks") is True
-    assert is_casual_query("who are you") is True
-
-
-def test_research_queries_not_casual():
-    assert is_casual_query("hello, what is the gold price today?") is False
-    assert is_casual_query("XAU/USD outlook") is False
-    assert is_casual_query("تحلیل طلا امروز") is False
-    assert is_casual_query("Fed rate cut impact on gold") is False

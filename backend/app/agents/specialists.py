@@ -202,8 +202,7 @@ For historical_analysis intent, include the requested time period in main_thesis
 answer_generator_agent = Agent(
     name="FinalAnswerGenerator",
     instructions="""Format synthesis into a clear answer for the user.
-You MUST write in the language specified by response_language in the input: "en" = English, "fa" = Persian/Farsi.
-Never switch languages unless response_language says "fa".
+Always write in English only. Never use Arabic, Persian, or any other language.
 Do NOT contradict the synthesis thesis, but DO explicitly mention key terms from the user's question
 (e.g. Fed/Federal Reserve/rates, CPI/inflation, specific years like 2020, gold/XAU/USD).
 For historical_analysis queries, briefly describe the requested historical period using well-known market context

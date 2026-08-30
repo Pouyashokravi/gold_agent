@@ -8,6 +8,8 @@ from typing import Any
 
 from agents import Runner
 
+from app.agents.direct_chat import direct_chat_agent
+from app.agents.intent_router import intent_router_agent
 from app.agents.query_understanding import gold_planner_agent, query_understanding_agent
 from app.agents.specialists import (
     answer_generator_agent,
@@ -27,6 +29,7 @@ from app.schemas.fundamental import FundamentalAgentOutput, FundamentalDriver
 from app.schemas.fundamental_lite import FundamentalAgentResponse
 from app.schemas.planner import GoldPlannerOutput
 from app.schemas.query import QueryUnderstandingOutput
+from app.schemas.routing import IntentRouterOutput, MessageRoute
 from app.schemas.synthesis import SynthesisOutput
 from app.schemas.technical import ChartAnnotations, ChartLevels, TechnicalAgentOutput, TradeSetup
 from app.schemas.technical_lite import TechnicalAgentResponse
@@ -35,11 +38,11 @@ from app.services.news_fallback import build_news_fallback
 from app.services.technical_fallback import build_technical_fallback
 from app.services.freshness import classify_freshness
 from app.services.policy import (
+    _contains_gold_keyword,
     apply_horizon_overrides,
     apply_intent_overrides,
     apply_routing_overrides,
     apply_trade_mode_overrides,
-    is_casual_query,
     validate_plan,
 )
 from app.services.agent_conflict import ConflictType, analyze_agent_relations, max_direction_conflict_severity
@@ -435,47 +438,57 @@ async def _maybe_refresh_technical(
 
 
 def _detect_response_language(query: str) -> str:
-    persian = sum(1 for c in query if "\u0600" <= c <= "\u06FF")
-    return "fa" if persian > max(3, len(query) * 0.12) else "en"
+    return "en"
 
 
-def _casual_response(query: str) -> str:
-    lang = _detect_response_language(query)
-    q = query.strip().lower()
-
-    if lang == "fa":
-        if any(t in q for t in ("ممنون", "متشکر", "مرسی", "سپاس", "thank")):
-            return (
-                "خواهش می‌کنم! اگر سوالی دربارهٔ طلا (XAU/USD) دارید — "
-                "مثلاً قیمت، تحلیل تکنیکال، فاندامنتال یا اخبار — بپرسید."
-            )
-        if any(m in q for m in ("چیکار", "چه کاری", "کی هست", "معرفی")):
-            return (
-                "من Gold Agent هستم — دستیار تحلیل طلا (XAU/USD).\n\n"
-                "می‌توانم دربارهٔ قیمت، روند بازار، تحلیل تکنیکال، "
-                "فاکتورهای فاندامنتال (نرخ بهره، دلار، تورم) و اخبار مهم طلا کمک کنم.\n\n"
-                "یک سوال بپرسید، مثلاً: «وضعیت طلا امروز چطوره؟»"
-            )
-        return (
-            "سلام! من Gold Agent هستم — دستیار تحلیل طلا (XAU/USD).\n\n"
-            "دربارهٔ قیمت، تحلیل تکنیکال، فاندامنتال یا اخبار طلا بپرسید."
+async def _route_message(query: str, history_text: str) -> IntentRouterOutput:
+    router_input = f"Query: {query}\n\nRecent conversation:\n{history_text}"
+    try:
+        result = await _run_agent(intent_router_agent, router_input)
+        if isinstance(result, IntentRouterOutput):
+            return result
+        return IntentRouterOutput(**result)
+    except Exception as exc:
+        logger.warning("Intent router failed (%s): %s", type(exc).__name__, exc)
+        fallback_route = MessageRoute.RESEARCH if _contains_gold_keyword(query) else MessageRoute.GENERAL_CHAT
+        return IntentRouterOutput(
+            route=fallback_route,
+            confidence=0.5,
+            reason=f"router fallback: {exc}",
         )
 
-    if any(t in q for t in ("thank", "thx", "ty", "cheers")):
-        return (
-            "You're welcome! Ask me anything about XAU/USD gold — "
-            "price, outlook, technicals, fundamentals, or news."
-        )
-    if any(m in q for m in ("who are you", "what are you", "what can you", "what do you", "help", "introduce")):
-        return (
-            "I'm Gold Agent — your XAU/USD gold research assistant.\n\n"
-            "I can analyze price, market outlook, technical levels, "
-            "fundamental drivers (rates, USD, inflation), and relevant news.\n\n"
-            "Try asking: \"What's the gold outlook today?\""
-        )
-    return (
-        "Hello! I'm Gold Agent — your XAU/USD gold research assistant.\n\n"
-        "Ask me about gold price, technical analysis, fundamentals, or news."
+
+async def _run_direct_chat(
+    query: str,
+    history_text: str,
+    mode: str,
+) -> str:
+    chat_input = _dumps({
+        "mode": mode,
+        "query": query,
+        "response_language": _detect_response_language(query),
+        "recent_conversation": history_text,
+    })
+    result = await _run_agent(direct_chat_agent, chat_input)
+    return str(result)
+
+
+async def _handle_direct_response(
+    query: str,
+    conversation_id: str,
+    history_text: str,
+    mode: str,
+    emit: EmitFn,
+    route_result: IntentRouterOutput,
+) -> None:
+    await emit(_sse("chat_response", message="Direct chat"))
+    answer_text = await _run_direct_chat(query, history_text, mode)
+    await _stream_text_answer(
+        answer_text,
+        conversation_id,
+        query,
+        emit,
+        metadata={"route": route_result.route.value, "route_reason": route_result.reason},
     )
 
 
@@ -510,18 +523,24 @@ async def run_pipeline(
         try:
             await emit(_sse("query_received", message="Query received", data={"request_id": request_id}))
 
-            if is_casual_query(query):
-                await emit(_sse("chat_response", message="Casual chat"))
-                await _stream_text_answer(
-                    _casual_response(query),
-                    conversation_id,
-                    query,
-                    emit,
+            history = await repositories.get_messages(conversation_id, limit=8)
+            history_text = "\n".join(f"{m['role']}: {m['content']}" for m in history)
+
+            await emit(_sse("routing_started", "intent_router", "Classifying message"))
+            route_result = await _route_message(query, history_text)
+            await emit(_sse("routing_completed", "intent_router", "Done", _dump(route_result)))
+
+            if route_result.route == MessageRoute.GENERAL_CHAT:
+                await _handle_direct_response(
+                    query, conversation_id, history_text, "general_chat", emit, route_result
                 )
                 return
 
-            history = await repositories.get_messages(conversation_id, limit=8)
-            history_text = "\n".join(f"{m['role']}: {m['content']}" for m in history)
+            if route_result.route == MessageRoute.OFF_TOPIC:
+                await _handle_direct_response(
+                    query, conversation_id, history_text, "off_topic", emit, route_result
+                )
+                return
 
             await emit(_sse("understanding_started", "query_understanding", "Understanding query"))
             try:
