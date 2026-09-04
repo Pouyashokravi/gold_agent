@@ -113,16 +113,19 @@ def _out(model):
 
 news_agent = Agent(
     name="NewsAgent",
-    instructions="""Analyze XAU/USD news. You MUST call search_news_with_tavily once with a query about gold/XAU news today.
+    instructions="""You are the News domain specialist for XAU/USD. Execute the Manager's task — do NOT create an architecture-level research plan.
+
+You MUST call search_news_with_tavily once with a query aligned to the provided task/focus.
 For economic data queries (CPI, NFP, Fed, GDP, PCE, unemployment, retail sales, jobless claims), also call
 search_economic_releases to find actual vs forecast figures in headlines.
+Prioritize evidence relevant to the user's horizon and the Manager task.
 Summarize top headlines and their gold impact.
 Return ONLY: direction, confidence (0-1), drivers, risks, events list.
 Each event: title, summary, direction, importance, event_type (cpi/nfp/fed_rate/gdp/etc),
 actual, forecast, previous, unit — ONLY populate actual/forecast/previous if explicitly stated in headlines.
 If forecast is not mentioned in the headline, set forecast=null (do NOT guess).
 Max 5 events. No evidence or sources arrays.""",
-    model=settings.specialist_model,
+    model=settings.news_model,
     tools=NEWS_TOOLS,
     output_type=_out(NewsAgentResponse),
     model_settings=_news_settings,
@@ -130,14 +133,16 @@ Max 5 events. No evidence or sources arrays.""",
 
 fundamental_agent = Agent(
     name="FundamentalAgent",
-    instructions="""Analyze XAU/USD macro fundamentals. Call get_macro_snapshot first (required).
-Focus on rates, real yields, inflation impact on gold.
+    instructions="""You are the Fundamental/macro domain specialist for XAU/USD. Execute the Manager's task — do NOT re-plan the overall research architecture.
+
+Call get_macro_snapshot first (required).
+Focus on rates, real yields, inflation, USD impact on gold as required by the task.
 If the query or context mentions economic surprises (actual vs forecast for CPI, NFP, Fed, GDP),
 reference them in fundamental_drivers with appropriate importance.
 Return ONLY: direction, confidence (0-1), drivers (short strings), risks (short strings),
 fundamental_drivers list with name, current_state, direction_for_gold, importance (LOW/MEDIUM/HIGH/CRITICAL), confidence.
 Do NOT include evidence or sources arrays. Max 5 fundamental_drivers.""",
-    model=settings.specialist_model,
+    model=settings.fundamental_model,
     tools=FUND_TOOLS,
     output_type=_out(FundamentalAgentResponse),
     model_settings=_fund_settings,
@@ -145,11 +150,12 @@ Do NOT include evidence or sources arrays. Max 5 fundamental_drivers.""",
 
 short_term_agent = Agent(
     name="ShortTermTechnical",
-    instructions="""Short-term XAU/USD technical analysis. Call get_xau_quote and get_xau_time_series first.
+    instructions="""LEGACY short-term refresh agent — V2 uses TechnicalAgent + STM.
+Short-term XAU/USD technical analysis. Call get_xau_quote and get_xau_time_series first.
 Return JSON with: direction (BULLISH/BEARISH/NEUTRAL/MIXED), confidence 0-1, trend, momentum, volatility strings,
 support_levels and resistance_levels as number arrays, drivers, risks. Keep evidence empty list [].
 Use ISO timestamp string for timestamp field. freshness: FRESH.""",
-    model=settings.specialist_model,
+    model=settings.technical_model,
     tools=TECH_TOOLS,
     output_type=_out(ShortTermTechnicalOutput),
     model_settings=_tech_settings,
@@ -157,10 +163,11 @@ Use ISO timestamp string for timestamp field. freshness: FRESH.""",
 
 long_term_agent = Agent(
     name="LongTermTechnical",
-    instructions="""Long-term XAU/USD technical analysis. Call get_xau_time_series with 1day interval first.
+    instructions="""LEGACY long-term refresh agent — V2 uses TechnicalAgent + STM.
+Long-term XAU/USD technical analysis. Call get_xau_time_series with 1day interval first.
 Return JSON with direction, confidence, primary_trend, market_structure, major_support, major_resistance arrays,
 drivers, risks. Keep evidence empty []. timestamp as ISO string. freshness: FRESH.""",
-    model=settings.specialist_model,
+    model=settings.technical_model,
     tools=TECH_TOOLS,
     output_type=_out(LongTermTechnicalOutput),
     model_settings=_tech_settings,
@@ -168,7 +175,9 @@ drivers, risks. Keep evidence empty []. timestamp as ISO string. freshness: FRES
 
 technical_agent = Agent(
     name="TechnicalAgent",
-    instructions="""XAU/USD technical analysis. Call get_xau_quote first, then calculate_support_resistance.
+    instructions="""You are the Technical domain specialist for XAU/USD. Execute the Manager's task — do NOT create an architecture-level plan.
+
+Call get_xau_quote first, then calculate_support_resistance (and other indicators as needed for the task).
 Return ONLY valid JSON matching the schema — no markdown, no prose outside JSON.
 Required fields: direction (BULLISH/BEARISH/NEUTRAL/MIXED), confidence (0-1), drivers (string list), risks (string list).
 When trade_mode is true you MUST return:
@@ -177,42 +186,23 @@ When trade_mode is true you MUST return:
 - chart_levels: trend (Bullish/Bearish/Neutral), support_levels[], resistance_levels[], invalidation_level.
 Chart levels MUST match trade_setup levels exactly. Use NO_TRADE when no high-quality setup exists.
 Keep drivers and risks to short strings (max 5 each).""",
-    model=settings.specialist_model,
+    model=settings.technical_model,
     tools=TECH_TOOLS,
     output_type=_out(TechnicalAgentResponse),
     model_settings=_tech_settings,
 )
 
+# Legacy agents retained for import compatibility / gradual cleanup.
+# V2 Gold Manager absorbs synthesis + final answer generation.
 synthesis_agent = Agent(
     name="GoldSynthesis",
-    instructions="""Synthesize specialist outputs for XAU/USD. No external research.
-Use agent_conflicts input for structured agreement/contradiction analysis — do NOT hide conflicts.
-Use economic_surprises input to weight evidence: larger surprises = higher importance.
-Find agreements/contradictions. Weight by horizon. Build base/bull/bear scenarios (weights sum to 1.0).
-Classify conflicts: DIRECTION_CONFLICT, HORIZON_CONFLICT, DATA_CONFLICT.
-Explain important conflicts in contradictions and key_risks (e.g. bullish overall but bearish technical).
-Passthrough trade_setup from technical only — do not invent entries.
-IMPORTANT: The synthesis MUST explicitly address the user's question topic (e.g. Fed/rates for rate-cut queries,
-CPI/inflation for inflation queries, specific years for historical queries).
-For historical_analysis intent, include the requested time period in main_thesis even if live data is limited.""",
-    model=settings.synthesis_model,
+    instructions="Legacy synthesis agent — prefer Gold Manager Answer in V2.",
+    model=settings.manager_model,
     output_type=_out(SynthesisOutput),
 )
 
 answer_generator_agent = Agent(
     name="FinalAnswerGenerator",
-    instructions="""Format synthesis into a clear answer for the user.
-Always write in English only. Never use Arabic, Persian, or any other language.
-Do NOT contradict the synthesis thesis, but DO explicitly mention key terms from the user's question
-(e.g. Fed/Federal Reserve/rates, CPI/inflation, specific years like 2020, gold/XAU/USD).
-For historical_analysis queries, briefly describe the requested historical period using well-known market context
-when live specialist data is insufficient — do not refuse or ignore the historical timeframe.
-Do NOT add unrelated new research beyond addressing the query context.
-Structure: XAU/USD View, Direction, Confidence, Horizon, Main Thesis, Key Drivers,
-context sections if data exists, Base/Bull/Bear, Risks, Invalidation.
-When trade_mode is true you MUST include a **Trade Setup** section with:
-Bias (LONG/SHORT), Entry Zone, Stop Loss, Take Profit targets, Risk/Reward, Invalidation.
-Then add disclaimer: 'This output is market analysis only and is not financial or investment advice.'
-Skip sections without data.""",
-    model=settings.answer_model,
+    instructions="Legacy answer agent — prefer Gold Manager Answer in V2.",
+    model=settings.fast_model,
 )

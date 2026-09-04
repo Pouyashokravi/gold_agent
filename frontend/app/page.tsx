@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { AgentStatus } from "@/components/AgentStatus";
 import { ChatInput } from "@/components/ChatInput";
 import { ChatMessage } from "@/components/ChatMessage";
@@ -66,24 +67,29 @@ export default function Home() {
 
   const markStep = useCallback((type: string) => {
     const startMap: Record<string, string> = {
-      routing_started: "routing",
       understanding_started: "understanding",
+      memory_check_started: "memory",
       planning_started: "planning",
       news_agent_started: "news_agent",
       fundamental_agent_started: "fundamental_agent",
       technical_agent_started: "technical_agent",
-      synthesis_started: "synthesis",
+      review_started: "review",
+      synthesis_started: "review",
       answer_started: "answer",
+      // legacy compatibility
+      routing_started: "understanding",
     };
     const doneMap: Record<string, string> = {
-      routing_completed: "routing",
       understanding_completed: "understanding",
+      memory_check_completed: "memory",
       planning_completed: "planning",
       news_agent_completed: "news_agent",
       fundamental_agent_completed: "fundamental_agent",
       technical_agent_completed: "technical_agent",
-      synthesis_completed: "synthesis",
+      review_completed: "review",
+      synthesis_completed: "review",
       answer_completed: "answer",
+      routing_completed: "understanding",
     };
     if (startMap[type]) setActiveStep(startMap[type]);
     if (doneMap[type]) setCompleted((prev) => new Set([...prev, doneMap[type]]));
@@ -101,8 +107,8 @@ export default function Home() {
     setSynthesis(null);
     setCompleted(new Set());
     setChatMode(false);
-    setActiveStep("routing");
-    setStatusMessage("Classifying your message...");
+    setActiveStep("understanding");
+    setStatusMessage("Understanding your request...");
 
     abortRef.current = new AbortController();
     let answer = "";
@@ -113,13 +119,17 @@ export default function Home() {
           setChatMode(true);
           setActiveStep("");
           setStatusMessage("");
+          setSynthesis(null);
           return;
         }
         markStep(event.type);
         if (event.message) setStatusMessage(event.message);
         if (event.type === "answer_delta" && event.data?.delta) {
           answer += event.data.delta as string;
-          setStreamText(answer);
+          // Flush each token so the UI paints progressively (ChatGPT-like).
+          flushSync(() => {
+            setStreamText(answer);
+          });
         }
         if (event.type === "check_completed" && event.data?.agents) {
           setEnabledAgents(event.data.agents as Record<string, boolean>);
@@ -209,7 +219,7 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-                <ResultCard synthesis={synthesis} />
+                <ResultCard synthesis={chatMode ? null : synthesis} />
                 <div ref={bottomRef} />
               </div>
             )}

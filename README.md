@@ -1,6 +1,8 @@
 # Gold Research Agent
 
-XAU/USD multi-agent research system.
+XAU/USD multi-agent research system (**V2 Gold Manager architecture**).
+
+See [`docs/V2_ARCHITECTURE.md`](docs/V2_ARCHITECTURE.md) for the V2 design, migration notes, and deliverables.
 
 ## Setup
 
@@ -21,6 +23,13 @@ npm run dev
 
 Open http://localhost:3000
 
+## Architecture (V2)
+
+- **Fast path** for simple price/indicator queries (no full research pipeline)
+- **Gold Manager** plans, delegates to News/Fundamental/Technical specialists + direct tools in parallel, reviews evidence, replans (bounded), then answers
+- **Short-term working memory** reuses fresh quotes/analysis (separate from chat history)
+- **Trader Mode**, Economic Surprise, News Impact, and Conflict Matrix are preserved
+
 ## API
 
 - `POST /api/conversations` — create conversation
@@ -30,14 +39,23 @@ Open http://localhost:3000
 
 ## Env
 
-See `.env.example`. Set `MOCK_EXTERNAL_APIS=true` for dev without burning API credits.
+See `.env.example`. Important model vars: `FAST_MODEL`, `MANAGER_MODEL`, `NEWS_MODEL`, `FUNDAMENTAL_MODEL`, `TECHNICAL_MODEL`, `MAX_REPLAN_ROUNDS`.
+
+Set `MOCK_EXTERNAL_APIS=true` for dev without burning API credits.
+
+## Tests
+
+```bash
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests/ -q
+```
 
 ## Deploy (Render)
 
 Test deployment uses two Render web services defined in [`render.yaml`](render.yaml):
 
 | Service | URL (default) |
-|---------|---------------|
+| ------ | --------------- |
 | Frontend | `https://gold-agent-web.onrender.com` |
 | Backend API | `https://gold-agent-api.onrender.com` |
 

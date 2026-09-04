@@ -28,5 +28,5 @@ Never provide financial advice. Never fabricate live market data."""
 direct_chat_agent = Agent(
     name="DirectChat",
     instructions=DIRECT_CHAT_INSTRUCTIONS,
-    model=settings.answer_model,
+    model=settings.fast_model,
 )

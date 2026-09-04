@@ -22,16 +22,28 @@ services:
         value: sqlite:///./gold_agent.db
       - key: CORS_ORIGINS
         value: https://gold-agent-web.onrender.com
-      - key: QUERY_MODEL
-        value: gpt-4.1-nano
-      - key: PLANNER_MODEL
-        value: gpt-4.1-mini
+      - key: FAST_MODEL
+        value: gpt-5.4-nano
+      - key: MANAGER_MODEL
+        value: gpt-5.4
+      - key: NEWS_MODEL
+        value: gpt-5.4-mini
+      - key: FUNDAMENTAL_MODEL
+        value: gpt-5.4-mini
+      - key: TECHNICAL_MODEL
+        value: gpt-5.4-mini
       - key: SPECIALIST_MODEL
-        value: gpt-4.1-mini
+        value: gpt-5.4-mini
+      - key: MAX_REPLAN_ROUNDS
+        value: "2"
+      - key: QUERY_MODEL
+        value: gpt-5.4-nano
+      - key: PLANNER_MODEL
+        value: gpt-5.4
       - key: SYNTHESIS_MODEL
-        value: gpt-4.1-mini
+        value: gpt-5.4
       - key: ANSWER_MODEL
-        value: gpt-4.1-nano
+        value: gpt-5.4-nano
       - key: TAVILY_ENABLED
         value: "true"
       - key: TAVILY_MONTHLY_BUDGET

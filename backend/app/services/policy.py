@@ -299,3 +299,86 @@ def validate_plan(plan: GoldPlannerOutput) -> list[str]:
 
 
 TAVILY_LIMITS = {"LIGHT": 1, "STANDARD": 2, "DEEP": 2}
+
+
+def apply_manager_plan_constraints(plan: "ManagerPlan", query: str, trade_mode: bool) -> "ManagerPlan":
+    """Hard deterministic safeguards applied to Gold Manager plans."""
+    from app.schemas.manager import ManagerPlan, ManagerTask
+
+    q = query.lower()
+    tasks = list(plan.tasks)
+    kinds = {t.kind for t in tasks}
+
+    def _has_agent(kind: str) -> bool:
+        return kind in kinds
+
+    def _ensure(task: ManagerTask) -> None:
+        nonlocal tasks, kinds
+        if task.kind in kinds:
+            return
+        tasks.append(task)
+        kinds.add(task.kind)
+
+    if trade_mode:
+        plan = plan.model_copy(update={"horizon": Horizon.INTRADAY})
+        _ensure(ManagerTask(
+            id="tech_trade",
+            kind="agent_technical",
+            depth="DEEP",
+            task="Produce XAU/USD trade setup with entry zone, stop loss, take profit, and bias (LONG/SHORT/NO_TRADE).",
+            focus=["entry", "stop loss", "take profit", "support", "resistance", "momentum"],
+        ))
+        # Cap news/fundamental depth in trade mode
+        new_tasks = []
+        for t in tasks:
+            if t.kind in {"agent_news", "agent_fundamental"} and t.depth not in {"OFF", "LIGHT"}:
+                t = t.model_copy(update={"depth": "LIGHT"})
+            new_tasks.append(t)
+        tasks = new_tasks
+
+    event_query = _is_event_impact_query(q, set())
+    if event_query and not trade_mode:
+        _ensure(ManagerTask(
+            id="news_event",
+            kind="agent_news",
+            depth="STANDARD",
+            task="Analyze market reaction and event headlines affecting XAU/USD.",
+            focus=["Federal Reserve", "rate decision", "US dollar", "US yields", "gold market"],
+        ))
+        _ensure(ManagerTask(
+            id="fund_event",
+            kind="agent_fundamental",
+            depth="STANDARD",
+            task="Analyze macro transmission to gold (real yields, USD, risk sentiment).",
+            focus=["real yields", "US dollar", "Fed policy", "inflation expectations"],
+        ))
+        _ensure(ManagerTask(
+            id="tech_event",
+            kind="agent_technical",
+            depth="STANDARD",
+            task="Assess XAU/USD technical levels and momentum for the event window.",
+            focus=["levels", "momentum"],
+        ))
+
+    if _is_trade_query(query, set()) and not event_query and not trade_mode:
+        # Keyword trade without trade_mode: force technical DEEP, drop news/fund unless already research-heavy
+        tasks = [t for t in tasks if t.kind not in {"agent_news", "agent_fundamental"}]
+        kinds = {t.kind for t in tasks}
+        _ensure(ManagerTask(
+            id="tech_trade_kw",
+            kind="agent_technical",
+            depth="DEEP",
+            task="XAU/USD trade setup with entry, SL, TP.",
+            focus=["entry", "stop loss", "take profit"],
+        ))
+
+    # Drop OFF-depth agent tasks
+    tasks = [t for t in tasks if not (t.kind.startswith("agent_") and t.depth == "OFF")]
+    return plan.model_copy(update={"tasks": tasks})
+
+
+def validate_manager_plan(plan: "ManagerPlan") -> list[str]:
+    warnings: list[str] = []
+    if not plan.clarification_question and not plan.tasks and not plan.use_prior_thesis:
+        warnings.append("No tasks and no prior thesis")
+    return warnings

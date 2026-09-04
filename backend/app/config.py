@@ -1,11 +1,16 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 _env_candidates = [ROOT_DIR / ".env", Path(".env"), Path("../.env")]
 _existing = [str(p) for p in _env_candidates if p.exists()]
+
+# Defaults — overridable via env; never hardcode model IDs in agent modules.
+DEFAULT_FAST_MODEL = "gpt-5.4-nano"
+DEFAULT_MANAGER_MODEL = "gpt-5.4"
+DEFAULT_SPECIALIST_MODEL = "gpt-5.4-mini"
 
 
 class Settings(BaseSettings):
@@ -20,11 +25,20 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
     database_url: str = "sqlite:///./gold_agent.db"
 
-    query_model: str = "gpt-4.1-nano"
-    planner_model: str = "gpt-4.1-mini"
-    specialist_model: str = "gpt-4.1-mini"
-    synthesis_model: str = "gpt-4.1-mini"
-    answer_model: str = "gpt-4.1-nano"
+    # Primary model settings
+    fast_model: str = DEFAULT_FAST_MODEL
+    manager_model: str = DEFAULT_MANAGER_MODEL
+    news_model: str = ""
+    fundamental_model: str = ""
+    technical_model: str = ""
+    # Shared specialist fallback (NEWS/FUNDAMENTAL/TECHNICAL inherit when unset)
+    specialist_model: str = DEFAULT_SPECIALIST_MODEL
+
+    # Legacy env compatibility
+    query_model: str = Field(default="")
+    planner_model: str = Field(default="")
+    synthesis_model: str = Field(default="")
+    answer_model: str = Field(default="")
 
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000,"
@@ -37,19 +51,31 @@ class Settings(BaseSettings):
     tavily_max_results: int = 8
     mock_external_apis: bool = False
 
-    # Timeouts (seconds)
     twelve_data_timeout: float = 8.0
     fred_timeout: float = 8.0
     tavily_timeout: float = 15.0
-    llm_timeout: float = 60.0
+    llm_timeout: float = 90.0
 
-    # Cache TTLs (seconds)
     cache_quote_ttl: int = 15
     cache_ohlc_1m_ttl: int = 60
     cache_ohlc_15m_ttl: int = 300
     cache_ohlc_daily_ttl: int = 1800
     cache_fred_ttl: int = 3600
     cache_tavily_ttl: int = 1200
+
+    stm_quote_ttl: int = 15
+    stm_ohlc_intraday_ttl: int = 60
+    stm_ohlc_daily_ttl: int = 1800
+    stm_indicator_ttl: int = 300
+    stm_fred_ttl: int = 3600
+    stm_news_ttl: int = 1200
+    stm_economic_release_ttl: int = 21600
+    stm_specialist_ttl: int = 900
+    stm_thesis_ttl: int = 1800
+    stm_trade_specialist_ttl: int = 300
+
+    max_replan_rounds: int = 2
+    session_history_limit: int = 16
 
     @field_validator(
         "openai_api_key",
@@ -60,6 +86,29 @@ class Settings(BaseSettings):
     @classmethod
     def strip_secrets(cls, value: str) -> str:
         return value.strip()
+
+    @model_validator(mode="after")
+    def resolve_model_aliases(self) -> "Settings":
+        # Per-domain specialists fall back to SPECIALIST_MODEL when unset.
+        news = self.news_model or self.specialist_model
+        fund = self.fundamental_model or self.specialist_model
+        tech = self.technical_model or self.specialist_model
+        object.__setattr__(self, "news_model", news)
+        object.__setattr__(self, "fundamental_model", fund)
+        object.__setattr__(self, "technical_model", tech)
+
+        # Legacy aliases → primary roles when primary still at defaults and legacy is set.
+        if self.query_model and self.fast_model == DEFAULT_FAST_MODEL and self.query_model != self.fast_model:
+            object.__setattr__(self, "fast_model", self.query_model)
+        if self.planner_model and self.manager_model == DEFAULT_MANAGER_MODEL and self.planner_model != self.manager_model:
+            object.__setattr__(self, "manager_model", self.planner_model)
+
+        # Populate legacy fields for any remaining consumers.
+        object.__setattr__(self, "query_model", self.query_model or self.fast_model)
+        object.__setattr__(self, "planner_model", self.planner_model or self.manager_model)
+        object.__setattr__(self, "synthesis_model", self.synthesis_model or self.manager_model)
+        object.__setattr__(self, "answer_model", self.answer_model or self.fast_model)
+        return self
 
 
 settings = Settings()
