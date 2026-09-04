@@ -1,13 +1,18 @@
 """V2 gate, STM, and manager policy tests (behavioral scenarios 1–10 coverage)."""
 
 import asyncio
-import time
 
 import pytest
 
 from app.schemas.common import Horizon
 from app.schemas.manager import ComplexityLevel, GateRoute, ManagerPlan, ManagerTask
-from app.services.gate import classify_gate
+from app.services.gate import (
+    classify_gate,
+    has_explicit_horizon,
+    looks_like_horizon_reply,
+    merge_clarification_query,
+    parse_horizon_from_text,
+)
 from app.services.policy import apply_manager_plan_constraints, validate_manager_plan
 from app.services import working_memory as stm
 
@@ -32,8 +37,25 @@ def test_clarification_bare_analyze():
     assert d.clarification_question
 
 
+def test_clarification_ambiguous_outlook():
+    d = classify_gate("What's the gold outlook?")
+    assert d.route == GateRoute.CLARIFY
+    assert d.clarification_question
+    assert "horizon" in d.clarification_question.lower() or "time" in d.clarification_question.lower()
+
+
+def test_clarification_gold_view_without_timeframe():
+    d = classify_gate("What do you think about XAU/USD?")
+    assert d.route == GateRoute.CLARIFY
+
+
 def test_clarification_skipped_when_horizon_present():
     d = classify_gate("Analyze XAU/USD for the next two weeks.")
+    assert d.route == GateRoute.RESEARCH
+
+
+def test_clarification_skipped_for_today_move():
+    d = classify_gate("Why did gold fall today despite dovish Fed expectations?")
     assert d.route == GateRoute.RESEARCH
 
 
@@ -61,6 +83,49 @@ def test_follow_up_uses_prior_thesis_path():
 def test_greeting_is_chat():
     d = classify_gate("Hello!")
     assert d.route == GateRoute.GENERAL_CHAT
+
+
+def test_pending_clarification_horizon_reply_is_research():
+    d = classify_gate(
+        "next two weeks",
+        pending_clarification=True,
+        pending_goal="What's the gold outlook?",
+    )
+    assert d.route == GateRoute.RESEARCH
+    assert "horizon" in d.reason or "clarification" in d.reason
+
+
+def test_pending_clarification_short_term_reply():
+    d = classify_gate("short-term", pending_clarification=True, pending_goal="Analyze gold")
+    assert d.route == GateRoute.RESEARCH
+
+
+def test_horizon_reply_not_off_topic_when_pending():
+    # Without pending, bare "next two weeks" has no gold keywords → OFF_TOPIC
+    alone = classify_gate("Focus on the next two weeks.")
+    assert alone.route == GateRoute.OFF_TOPIC
+    resumed = classify_gate(
+        "Focus on the next two weeks.",
+        pending_clarification=True,
+        pending_goal="Analyze gold for me.",
+    )
+    assert resumed.route == GateRoute.RESEARCH
+
+
+def test_has_explicit_horizon_helpers():
+    assert has_explicit_horizon("gold outlook for next two weeks") is True
+    assert has_explicit_horizon("What's the gold outlook?") is False
+    assert looks_like_horizon_reply("short-term") is True
+    assert looks_like_horizon_reply("intraday") is True
+    assert parse_horizon_from_text("next two weeks") == Horizon.SHORT_TERM
+    assert parse_horizon_from_text("intraday scalp") == Horizon.INTRADAY
+    assert parse_horizon_from_text("medium-term") == Horizon.MEDIUM_TERM
+
+
+def test_merge_clarification_query():
+    merged = merge_clarification_query("What's the gold outlook?", "next two weeks")
+    assert "gold outlook" in merged.lower()
+    assert "next two weeks" in merged.lower() or "short" in merged.lower()
 
 
 def test_manager_plan_trade_mode_forces_technical():

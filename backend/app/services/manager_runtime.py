@@ -47,10 +47,15 @@ from app.services.chart_levels import resolve_technical_chart_output
 from app.services.economic_surprise import enrich_news_event
 from app.services.evidence import clamp_confidence
 from app.services.fundamental_fallback import build_fundamental_fallback
-from app.services.gate import GateDecision, classify_gate
+from app.services.gate import (
+    GateDecision,
+    classify_gate,
+    merge_clarification_query,
+    parse_horizon_from_text,
+)
 from app.services.news_fallback import build_news_fallback
 from app.services.policy import apply_manager_plan_constraints, validate_manager_plan
-from app.services.session import history_for_manager, history_text
+from app.services.session import get_pending_clarification, history_for_manager, history_text
 from app.services.technical_fallback import build_technical_fallback
 from app.services.trade_setup import build_trade_setup
 from app.services import working_memory as stm
@@ -851,14 +856,32 @@ async def run_v2_pipeline(
             hist = await history_text(conversation_id)
             hist_msgs = await history_for_manager(conversation_id)
             prior = await stm.get_thesis(conversation_id)
+            pending = await get_pending_clarification(conversation_id)
+
+            effective_query = query
+            forced_horizon: Horizon | None = None
+            if pending:
+                effective_query = merge_clarification_query(pending["pending_goal"], query)
+                forced_horizon = parse_horizon_from_text(query)
 
             await emit(_sse("understanding_started", "gate", "Understanding request"))
-            decision = classify_gate(query, trade_mode=trade_mode, has_prior_thesis=bool(prior))
+            decision = classify_gate(
+                query,
+                trade_mode=trade_mode,
+                has_prior_thesis=bool(prior),
+                pending_clarification=bool(pending),
+                pending_goal=(pending or {}).get("pending_goal"),
+            )
             await emit(_sse(
                 "understanding_completed",
                 "gate",
                 decision.reason,
-                {"route": decision.route.value, "complexity": decision.complexity.value},
+                {
+                    "route": decision.route.value,
+                    "complexity": decision.complexity.value,
+                    "pending_clarification": bool(pending),
+                    "effective_query": effective_query if pending else None,
+                },
             ))
 
             # --- Chat / off-topic ---
@@ -877,7 +900,11 @@ async def run_v2_pipeline(
                     conversation_id,
                     query,
                     emit,
-                    metadata={"route": "clarify"},
+                    metadata={
+                        "route": "clarify",
+                        "pending_goal": query,
+                        "missing": ["horizon"],
+                    },
                 )
                 return
 
@@ -902,19 +929,30 @@ async def run_v2_pipeline(
 
             await emit(_sse("planning_started", "gold_manager", "Planning research"))
             plan_input = _dumps({
-                "query": query,
+                "query": effective_query,
+                "original_user_message": query,
                 "trade_mode": trade_mode,
                 "suggested_complexity": decision.complexity.value,
                 "conversation": hist_msgs[-8:],
                 "short_term_memory": stm_summary,
                 "prior_thesis": prior,
+                "pending_clarification_resolved": bool(pending),
+                "forced_horizon": forced_horizon.value if forced_horizon else None,
             })
             try:
                 plan_raw = await _run_agent(gold_manager_plan_agent, plan_input)
                 plan = plan_raw if isinstance(plan_raw, ManagerPlan) else ManagerPlan(**_dump(plan_raw))
             except Exception as exc:
                 logger.warning("Manager plan failed, using fallback: %s", exc)
-                plan = _default_plan_from_gate(query, decision, trade_mode)
+                plan = _default_plan_from_gate(effective_query, decision, trade_mode)
+
+            if forced_horizon is not None:
+                plan = plan.model_copy(update={
+                    "horizon": forced_horizon,
+                    "clarification_question": None,
+                })
+                if not plan.goal:
+                    plan = plan.model_copy(update={"goal": effective_query})
 
             if plan.clarification_question and not plan.tasks and not plan.use_prior_thesis:
                 await emit(_sse("planning_completed", "gold_manager", "Needs clarification", _dump(plan)))
@@ -924,11 +962,15 @@ async def run_v2_pipeline(
                     conversation_id,
                     query,
                     emit,
-                    metadata={"route": "clarify"},
+                    metadata={
+                        "route": "clarify",
+                        "pending_goal": query,
+                        "missing": ["horizon"],
+                    },
                 )
                 return
 
-            plan = apply_manager_plan_constraints(plan, query, trade_mode)
+            plan = apply_manager_plan_constraints(plan, effective_query, trade_mode)
             warnings = validate_manager_plan(plan)
             await emit(_sse("planning_completed", "gold_manager", "Done", _dump(plan)))
             await emit(_sse("check_completed", "policy", "Done", {
@@ -952,7 +994,7 @@ async def run_v2_pipeline(
 
             await _execute_tasks(
                 plan.tasks,
-                query=query,
+                query=effective_query,
                 horizon=horizon.value,
                 trade_mode=trade_mode,
                 conversation_id=conversation_id,
@@ -978,9 +1020,9 @@ async def run_v2_pipeline(
                     await _execute_tasks(
                         [
                             ManagerTask(id=f"re_q_{replan_round}", kind="tool_quote", task="Current quote"),
-                            ManagerTask(id=f"re_t_{replan_round}", kind="agent_technical", task=query, depth="STANDARD"),
+                            ManagerTask(id=f"re_t_{replan_round}", kind="agent_technical", task=effective_query, depth="STANDARD"),
                         ],
-                        query=query,
+                        query=effective_query,
                         horizon=horizon.value,
                         trade_mode=trade_mode,
                         conversation_id=conversation_id,
@@ -994,7 +1036,7 @@ async def run_v2_pipeline(
                     review_raw = await _run_agent(
                         gold_manager_review_agent,
                         _dumps({
-                            "query": query,
+                            "query": effective_query,
                             "horizon": horizon.value,
                             "specialist_outputs": pool.specialist_outputs,
                             "tool_outputs": pool.tool_outputs,
@@ -1016,7 +1058,7 @@ async def run_v2_pipeline(
                 await emit(_sse("replan_started", "gold_manager", f"Replan round {replan_round + 1}"))
                 await _execute_tasks(
                     review.replan_tasks,
-                    query=query,
+                    query=effective_query,
                     horizon=horizon.value,
                     trade_mode=trade_mode,
                     conversation_id=conversation_id,
@@ -1046,7 +1088,7 @@ async def run_v2_pipeline(
                 syn_raw = await _run_agent(
                     gold_manager_synthesis_agent,
                     _dumps({
-                        "query": query,
+                        "query": effective_query,
                         "horizon": horizon.value,
                         "trade_mode": trade_mode,
                         "specialist_outputs": specialist_outputs,
@@ -1079,7 +1121,7 @@ async def run_v2_pipeline(
             await emit(_sse("synthesis_completed", "synthesis", "Done", _dump(synthesis)))
 
             answer_input = _dumps({
-                "query": query,
+                "query": effective_query,
                 "horizon": horizon.value,
                 "trade_mode": trade_mode,
                 "synthesis": _dump(synthesis),
@@ -1121,7 +1163,7 @@ async def run_v2_pipeline(
                 "specialist_outputs": specialist_outputs,
             })
             await stm.put_thesis(conversation_id, {
-                "query": query,
+                "query": effective_query,
                 "horizon": horizon.value,
                 "synthesis": _dump(synthesis),
                 "answer_excerpt": answer_text[:500],

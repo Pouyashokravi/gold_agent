@@ -36,11 +36,29 @@ async def add_message(conversation_id: str, role: str, content: str, metadata: d
 async def get_messages(conversation_id: str, limit: int = 10) -> list[dict]:
     async with get_connection() as conn:
         cursor = await conn.execute(
-            "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT role, content, metadata_json, created_at FROM messages "
+            "WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
             (conversation_id, limit),
         )
         rows = await cursor.fetchall()
-    return [{"role": r["role"], "content": r["content"], "created_at": r["created_at"]} for r in reversed(rows)]
+    out: list[dict] = []
+    for r in reversed(rows):
+        meta: dict = {}
+        raw = r["metadata_json"]
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    meta = parsed
+            except (TypeError, json.JSONDecodeError):
+                meta = {}
+        out.append({
+            "role": r["role"],
+            "content": r["content"],
+            "created_at": r["created_at"],
+            "metadata": meta,
+        })
+    return out
 
 
 async def save_technical_output(kind: str, output: dict) -> None:

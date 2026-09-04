@@ -23,7 +23,14 @@ Given the user query, conversation history, short-term memory summary, trade_mod
 7. Set precise task text for each specialist (what to investigate, horizon, focus). Do NOT ask specialists to re-plan architecture.
 8. Mark depends_on only when truly required; otherwise leave empty so work can run in parallel.
 9. If a fresh prior thesis in memory answers a follow-up, set use_prior_thesis=true and minimize new tasks.
-10. If essential info is missing and no safe default exists, set clarification_question and leave tasks empty.
+10. TIME HORIZON RULE (critical):
+   - If the user asks for outlook / analysis / bias / forecast / trade setup and does NOT specify
+     a timeframe or date range (intraday, today, this week, few days, short/medium/long-term,
+     next N weeks/months, etc.), set clarification_question asking which horizon to use and
+     leave tasks EMPTY. Do NOT invent short_term, few_days, or any default horizon just to proceed.
+   - Exception: trade_mode=true may assume intraday for trade setups.
+   - Exception: follow-ups that explicitly reuse a prior thesis (use_prior_thesis=true) may keep
+     the prior horizon.
 11. Never invent live prices. Never turn ordinary research into trade advice unless trade_mode is true.
 
 Output ManagerPlan JSON only."""

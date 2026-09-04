@@ -69,7 +69,16 @@ User-facing LLM answers (DirectChat + Gold Manager Answer) use `Runner.run_strea
 
 ## 7. Clarification
 
-Gate (and Manager plan) ask only when missing info would change scope (e.g. bare “Analyze gold”). Trade Mode supplies intraday defaults — no nag. Clarification is stored as a normal assistant turn; the next user message continues the conversation.
+Gate (and Manager plan) ask when the user requests outlook / analysis / trade setup **without** an
+explicit timeframe or date range (intraday, today, this week, few days, short/medium/long-term,
+“next N weeks”, etc.). Vague words like “outlook” alone are **not** treated as a timeframe.
+
+Trade Mode supplies an intraday default for trade setups — no nag.
+
+Clarification is stored as a normal assistant turn with metadata
+`{"route": "clarify", "pending_goal": "<original user ask>", "missing": ["horizon"]}`.
+The next user message (e.g. “next two weeks” or “short-term”) is merged with `pending_goal` and
+routed to RESEARCH instead of OFF_TOPIC / chat.
 
 ## 8. Multi-turn context
 
