@@ -18,6 +18,7 @@ class GateRoute(str, Enum):
     OFF_TOPIC = "OFF_TOPIC"
     FAST = "FAST"
     CLARIFY = "CLARIFY"
+    STANDARD = "STANDARD"
     RESEARCH = "RESEARCH"
 
 
@@ -52,7 +53,6 @@ class ManagerPlan(BaseModel):
     complexity: ComplexityLevel = ComplexityLevel.STANDARD
     clarification_question: str | None = None
     tasks: list[ManagerTask] = Field(default_factory=list)
-    use_prior_thesis: bool = False
     rationale: str = ""
 
 
@@ -74,7 +74,6 @@ class EvidenceCategory(str, Enum):
     FUNDAMENTAL = "fundamental"
     TECHNICAL = "technical"
     ECONOMIC_SURPRISE = "economic_surprise"
-    MEMORY = "memory"
     TOOL = "tool"
 
 
@@ -98,7 +97,6 @@ class EvidencePool(BaseModel):
     specialist_outputs: dict[str, Any] = Field(default_factory=dict)
     tool_outputs: dict[str, Any] = Field(default_factory=dict)
     economic_surprises: list[dict[str, Any]] = Field(default_factory=list)
-    memory_hits: list[str] = Field(default_factory=list)
 
     def add(self, item: EvidenceItem) -> None:
         self.items.append(item)

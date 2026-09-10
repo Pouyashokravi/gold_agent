@@ -11,7 +11,7 @@ from app.schemas.routing import IntentRouterOutput
 
 intent_router_agent = Agent(
     name="IntentRouter",
-    instructions="LEGACY — unused in V2. Prefer app.services.gate.classify_gate.",
+    instructions="LEGACY — unused in V2. Prefer app.services.conversation_gate.run_conversation_gate.",
     model=settings.fast_model,
     output_type=AgentOutputSchema(IntentRouterOutput, strict_json_schema=False),
 )

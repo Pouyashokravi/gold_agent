@@ -301,8 +301,18 @@ def validate_plan(plan: GoldPlannerOutput) -> list[str]:
 TAVILY_LIMITS = {"LIGHT": 1, "STANDARD": 2, "DEEP": 2}
 
 
-def apply_manager_plan_constraints(plan: "ManagerPlan", query: str, trade_mode: bool) -> "ManagerPlan":
+def apply_manager_plan_constraints(
+    plan: "ManagerPlan",
+    query: str,
+    trade_mode: bool,
+    analysis_scopes: list | None = None,
+) -> "ManagerPlan":
     """Hard deterministic safeguards applied to Gold Manager plans."""
+    from app.schemas.conversation_gate import (
+        AnalysisScope,
+        SCOPE_TO_AGENT_KIND,
+        coerce_analysis_scopes,
+    )
     from app.schemas.manager import ManagerPlan, ManagerTask
 
     q = query.lower()
@@ -319,6 +329,35 @@ def apply_manager_plan_constraints(plan: "ManagerPlan", query: str, trade_mode: 
         tasks.append(task)
         kinds.add(task.kind)
 
+    scopes = coerce_analysis_scopes(analysis_scopes)
+    scope_task_specs = {
+        AnalysisScope.FUNDAMENTAL: ManagerTask(
+            id="fund_scope",
+            kind="agent_fundamental",
+            depth="STANDARD",
+            task="Analyze macro/fundamental drivers for XAU/USD as required by Gate analysis_scopes.",
+            focus=["real yields", "US dollar", "Fed policy", "inflation"],
+        ),
+        AnalysisScope.TECHNICAL: ManagerTask(
+            id="tech_scope",
+            kind="agent_technical",
+            depth="STANDARD",
+            task="Analyze XAU/USD technical structure as required by Gate analysis_scopes.",
+            focus=["levels", "momentum", "structure"],
+        ),
+        AnalysisScope.NEWS: ManagerTask(
+            id="news_scope",
+            kind="agent_news",
+            depth="STANDARD",
+            task="Analyze recent headlines/catalysts for XAU/USD as required by Gate analysis_scopes.",
+            focus=["catalysts", "headlines", "market reaction"],
+        ),
+    }
+    for scope in scopes:
+        spec = scope_task_specs.get(scope)
+        if spec is not None:
+            _ensure(spec)
+
     if trade_mode:
         plan = plan.model_copy(update={"horizon": Horizon.INTRADAY})
         _ensure(ManagerTask(
@@ -328,7 +367,7 @@ def apply_manager_plan_constraints(plan: "ManagerPlan", query: str, trade_mode: 
             task="Produce XAU/USD trade setup with entry zone, stop loss, take profit, and bias (LONG/SHORT/NO_TRADE).",
             focus=["entry", "stop loss", "take profit", "support", "resistance", "momentum"],
         ))
-        # Cap news/fundamental depth in trade mode
+        # Cap news/fundamental depth in trade mode — do not remove required scope agents
         new_tasks = []
         for t in tasks:
             if t.kind in {"agent_news", "agent_fundamental"} and t.depth not in {"OFF", "LIGHT"}:
@@ -360,8 +399,8 @@ def apply_manager_plan_constraints(plan: "ManagerPlan", query: str, trade_mode: 
             focus=["levels", "momentum"],
         ))
 
-    if _is_trade_query(query, set()) and not event_query and not trade_mode:
-        # Keyword trade without trade_mode: force technical DEEP, drop news/fund unless already research-heavy
+    if _is_trade_query(query, set()) and not event_query and not trade_mode and not scopes:
+        # Keyword trade without trade_mode and without Gate scopes: force technical DEEP
         tasks = [t for t in tasks if t.kind not in {"agent_news", "agent_fundamental"}]
         kinds = {t.kind for t in tasks}
         _ensure(ManagerTask(
@@ -371,14 +410,42 @@ def apply_manager_plan_constraints(plan: "ManagerPlan", query: str, trade_mode: 
             task="XAU/USD trade setup with entry, SL, TP.",
             focus=["entry", "stop loss", "take profit"],
         ))
+    elif _is_trade_query(query, set()) and not event_query and not trade_mode and scopes:
+        # With explicit scopes, ensure technical DEEP but keep other required scope agents
+        _ensure(ManagerTask(
+            id="tech_trade_kw",
+            kind="agent_technical",
+            depth="DEEP",
+            task="XAU/USD trade setup with entry, SL, TP.",
+            focus=["entry", "stop loss", "take profit"],
+        ))
 
-    # Drop OFF-depth agent tasks
+    # Drop OFF-depth agent tasks (but re-ensure required scopes afterward)
     tasks = [t for t in tasks if not (t.kind.startswith("agent_") and t.depth == "OFF")]
+    kinds = {t.kind for t in tasks}
+    for scope in scopes:
+        kind = SCOPE_TO_AGENT_KIND.get(scope)
+        if kind and kind not in kinds:
+            spec = scope_task_specs.get(scope)
+            if spec is not None:
+                tasks.append(spec)
+                kinds.add(spec.kind)
+
     return plan.model_copy(update={"tasks": tasks})
 
 
-def validate_manager_plan(plan: "ManagerPlan") -> list[str]:
+def validate_manager_plan(
+    plan: "ManagerPlan",
+    analysis_scopes: list | None = None,
+) -> list[str]:
+    from app.schemas.conversation_gate import SCOPE_TO_AGENT_KIND, coerce_analysis_scopes
+
     warnings: list[str] = []
-    if not plan.clarification_question and not plan.tasks and not plan.use_prior_thesis:
-        warnings.append("No tasks and no prior thesis")
+    if not plan.clarification_question and not plan.tasks:
+        warnings.append("No tasks planned")
+    kinds = {t.kind for t in plan.tasks}
+    for scope in coerce_analysis_scopes(analysis_scopes):
+        kind = SCOPE_TO_AGENT_KIND.get(scope)
+        if kind and kind not in kinds:
+            warnings.append(f"Missing required specialist for scope {scope.value}: {kind}")
     return warnings

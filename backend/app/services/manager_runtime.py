@@ -1,4 +1,4 @@
-"""Gold Manager V2 hybrid runtime: gate → plan → parallel execute → review/replan → answer."""
+"""Gold Manager V2 hybrid runtime: Conversation Gate → plan → execute → review/replan → answer."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from app.agents.specialists import fundamental_agent, news_agent, technical_agen
 from app.config import settings
 from app.db import repositories
 from app.schemas.common import Horizon
+from app.schemas.conversation_gate import ConversationGateOutput
 from app.schemas.fundamental import FundamentalAgentOutput, FundamentalDriver
 from app.schemas.fundamental_lite import FundamentalAgentResponse
 from app.schemas.manager import (
@@ -44,21 +45,21 @@ from app.schemas.technical import ChartAnnotations, ChartLevels, TechnicalAgentO
 from app.schemas.technical_lite import TechnicalAgentResponse
 from app.services.agent_conflict import ConflictType, analyze_agent_relations, max_direction_conflict_severity
 from app.services.chart_levels import resolve_technical_chart_output
+from app.services.conversation_gate import (
+    CLARIFICATION_LIMIT_MESSAGE,
+    apply_clarification_limit,
+    gate_diagnostics,
+    run_conversation_gate,
+)
+from app.services.conversation_memory import schedule_summary_update
 from app.services.economic_surprise import enrich_news_event
 from app.services.evidence import clamp_confidence
 from app.services.fundamental_fallback import build_fundamental_fallback
-from app.services.gate import (
-    GateDecision,
-    classify_gate,
-    merge_clarification_query,
-    parse_horizon_from_text,
-)
 from app.services.news_fallback import build_news_fallback
 from app.services.policy import apply_manager_plan_constraints, validate_manager_plan
-from app.services.session import get_pending_clarification, history_for_manager, history_text
+from app.services.session import history_for_manager, history_text, load_conversation_context
 from app.services.technical_fallback import build_technical_fallback
 from app.services.trade_setup import build_trade_setup
-from app.services import working_memory as stm
 from app.tools import twelve_data
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ async def _emit_complete_answer(
     await emit(_sse("answer_completed", "answer", "Done", {"answer": text, **(metadata or {})}))
     await repositories.add_message(conversation_id, "user", query)
     await repositories.add_message(conversation_id, "assistant", text, metadata or {})
+    schedule_summary_update(conversation_id)
 
 
 async def _stream_agent_text(
@@ -210,6 +212,7 @@ async def _stream_and_persist_agent_answer(
     await emit(_sse("answer_completed", "answer", "Done", {"answer": text, **(metadata or {})}))
     await repositories.add_message(conversation_id, "user", query)
     await repositories.add_message(conversation_id, "assistant", text, metadata or {})
+    schedule_summary_update(conversation_id)
     return text
 
 
@@ -488,22 +491,14 @@ def _apply_synthesis_trade_overrides(
 
 # --- Fast path tools ---
 
-async def _execute_fast(decision: GateDecision, conversation_id: str, emit: EmitFn) -> str:
-    await emit(_sse("memory_check_started", "memory", "Checking short-term memory"))
+async def _execute_fast(decision: ConversationGateOutput, conversation_id: str, emit: EmitFn) -> str:
     kind = decision.fast_kind or "quote"
-    params = decision.fast_params or {}
+    params = decision.fast_params
 
     if kind == "quote":
-        cached, freshness, _ = await stm.get_fresh(conversation_id, "quote")
-        if cached is None:
-            cached, freshness, _ = await stm.get_fresh("global", "quote")
-        await emit(_sse("memory_check_completed", "memory", f"quote={freshness or 'miss'}"))
-        if cached is None:
-            await emit(_sse("direct_tool_started", "tool", "Fetching XAU/USD quote"))
-            cached = await twelve_data.get_xau_quote()
-            await stm.put(conversation_id, "quote", cached, "quote")
-            await stm.put("global", "quote", cached, "quote")
-            await emit(_sse("direct_tool_completed", "tool", "Quote ready"))
+        await emit(_sse("direct_tool_started", "tool", "Fetching XAU/USD quote"))
+        cached = await twelve_data.get_xau_quote()
+        await emit(_sse("direct_tool_completed", "tool", "Quote ready"))
         close = cached.get("close") or cached.get("price")
         high = cached.get("high")
         low = cached.get("low")
@@ -516,43 +511,27 @@ async def _execute_fast(decision: GateDecision, conversation_id: str, emit: Emit
         )
 
     if kind == "high_low":
-        await emit(_sse("memory_check_completed", "memory", "Checking quote for high/low"))
-        quote, _, _ = await stm.get_fresh(conversation_id, "quote")
-        if quote is None:
-            quote, _, _ = await stm.get_fresh("global", "quote")
-        if quote is None:
-            await emit(_sse("direct_tool_started", "tool", "Fetching quote"))
-            quote = await twelve_data.get_xau_quote()
-            await stm.put(conversation_id, "quote", quote, "quote")
-            await stm.put("global", "quote", quote, "quote")
-            await emit(_sse("direct_tool_completed", "tool", "Done"))
+        await emit(_sse("direct_tool_started", "tool", "Fetching quote"))
+        quote = await twelve_data.get_xau_quote()
+        await emit(_sse("direct_tool_completed", "tool", "Done"))
         which = params.get("which", "high")
         val = quote.get(which)
         return f"Today's XAU/USD **{which}** is **{val}** (from the current session quote)."
 
     # Indicators
     interval = params.get("interval", "1h")
-    mem_key = f"{kind}:{interval}"
-    cached, freshness, _ = await stm.get_fresh(conversation_id, mem_key)
-    await emit(_sse("memory_check_completed", "memory", f"{kind}={freshness or 'miss'}"))
-    if cached is None:
-        await emit(_sse("direct_tool_started", "tool", f"Fetching {kind.upper()} ({interval})"))
-        fetchers = {
-            "rsi": twelve_data.get_xau_rsi,
-            "sma": twelve_data.get_xau_sma,
-            "ema": twelve_data.get_xau_ema,
-            "macd": twelve_data.get_xau_macd,
-            "atr": twelve_data.get_xau_atr,
-        }
-        fn = fetchers.get(kind, twelve_data.get_xau_rsi)
-        if kind == "macd":
-            cached = await fn(interval=interval)
-        else:
-            cached = await fn(interval=interval)
-        await stm.put(conversation_id, mem_key, cached, "indicator")
-        await emit(_sse("direct_tool_completed", "tool", f"{kind.upper()} ready"))
+    await emit(_sse("direct_tool_started", "tool", f"Fetching {kind.upper()} ({interval})"))
+    fetchers = {
+        "rsi": twelve_data.get_xau_rsi,
+        "sma": twelve_data.get_xau_sma,
+        "ema": twelve_data.get_xau_ema,
+        "macd": twelve_data.get_xau_macd,
+        "atr": twelve_data.get_xau_atr,
+    }
+    fn = fetchers.get(kind, twelve_data.get_xau_rsi)
+    cached = await fn(interval=interval)
+    await emit(_sse("direct_tool_completed", "tool", f"{kind.upper()} ready"))
 
-    # Format briefly
     values = cached.get("values") or cached.get("value") or cached
     latest = values[0] if isinstance(values, list) and values else values
     return f"**XAU/USD {kind.upper()} ({interval})**: `{_dumps(latest)}`"
@@ -564,8 +543,24 @@ async def _handle_direct_chat(
     hist: str,
     mode: str,
     emit: EmitFn,
+    *,
+    decision: ConversationGateOutput | None = None,
+    answer_override: str | None = None,
 ) -> None:
     await emit(_sse("chat_response", message="Direct chat"))
+    meta: dict = {"route": mode}
+    if decision is not None:
+        meta["gate"] = gate_diagnostics(decision)
+        meta["action"] = decision.action.value.lower()
+    if answer_override is not None:
+        await _emit_complete_answer(
+            answer_override,
+            conversation_id,
+            query,
+            emit,
+            metadata=meta,
+        )
+        return
     chat_input = _dumps({
         "mode": mode,
         "query": query,
@@ -578,18 +573,44 @@ async def _handle_direct_chat(
         conversation_id,
         query,
         emit,
-        metadata={"route": mode},
+        metadata=meta,
         started_message="Responding",
     )
 
 
-def _default_plan_from_gate(query: str, decision: GateDecision, trade_mode: bool) -> ManagerPlan:
-    """Fallback plan if Manager plan call fails."""
-    horizon = Horizon.INTRADAY if trade_mode else Horizon.FEW_DAYS
+def _default_plan_from_gate(query: str, decision: ConversationGateOutput, trade_mode: bool) -> ManagerPlan:
+    """Fallback plan if Manager plan call fails — honors analysis_scopes when present."""
+    from app.schemas.conversation_gate import (
+        AnalysisScope,
+        SCOPE_TO_AGENT_KIND,
+        coerce_analysis_scopes,
+        scopes_from_intent,
+    )
+
+    horizon = decision.horizon or (Horizon.INTRADAY if trade_mode else Horizon.FEW_DAYS)
+    complexity = decision.complexity
+    scopes = coerce_analysis_scopes(decision.analysis_scopes)
+    if not scopes and decision.intent is not None:
+        scopes = scopes_from_intent(decision.intent)
+
     tasks: list[ManagerTask] = []
-    if decision.complexity == ComplexityLevel.RESEARCH or any(
-        w in query.lower() for w in ("why", "despite", "outlook", "fed", "news", "macro")
-    ):
+    if scopes:
+        depth = "STANDARD"
+        for i, scope in enumerate(scopes):
+            kind = SCOPE_TO_AGENT_KIND.get(scope)
+            if not kind:
+                continue
+            label = scope.value.lower()
+            tasks.append(
+                ManagerTask(
+                    id=f"scope_{label}_{i}",
+                    kind=kind,  # type: ignore[arg-type]
+                    task=f"{scope.value} analysis for: {query}",
+                    depth=depth,
+                )
+            )
+        tasks.append(ManagerTask(id="q1", kind="tool_quote", task="Current XAU/USD quote"))
+    elif complexity == ComplexityLevel.RESEARCH or decision.action == GateRoute.RESEARCH:
         tasks = [
             ManagerTask(id="n1", kind="agent_news", task=f"Investigate catalysts for: {query}", depth="STANDARD"),
             ManagerTask(id="f1", kind="agent_fundamental", task=f"Macro context for: {query}", depth="STANDARD"),
@@ -601,19 +622,32 @@ def _default_plan_from_gate(query: str, decision: GateDecision, trade_mode: bool
             ManagerTask(id="t1", kind="agent_technical", task=query, depth="STANDARD"),
         ]
     if trade_mode:
-        tasks = [
-            ManagerTask(
-                id="t1",
-                kind="agent_technical",
-                depth="DEEP",
-                task="Produce trade setup with entry/SL/TP and bias LONG/SHORT/NO_TRADE.",
-            ),
-            ManagerTask(id="q1", kind="tool_quote", task="Current quote"),
-        ]
+        # Keep required scope agents; ensure deep technical + quote
+        kinds = {t.kind for t in tasks}
+        if "agent_technical" not in kinds:
+            tasks.append(
+                ManagerTask(
+                    id="t1",
+                    kind="agent_technical",
+                    depth="DEEP",
+                    task="Produce trade setup with entry/SL/TP and bias LONG/SHORT/NO_TRADE.",
+                )
+            )
+        else:
+            tasks = [
+                (
+                    t.model_copy(update={"depth": "DEEP"})
+                    if t.kind == "agent_technical"
+                    else t
+                )
+                for t in tasks
+            ]
+        if "tool_quote" not in {t.kind for t in tasks}:
+            tasks.append(ManagerTask(id="q1", kind="tool_quote", task="Current quote"))
     return ManagerPlan(
         goal=query,
         horizon=horizon,
-        complexity=decision.complexity,
+        complexity=complexity if complexity != ComplexityLevel.FAST else ComplexityLevel.STANDARD,
         tasks=tasks,
         rationale="fallback plan",
     )
@@ -635,57 +669,33 @@ async def _run_tool_task(task: ManagerTask, conversation_id: str, emit: EmitFn) 
     params = task.params or {}
     interval = params.get("interval", "1h")
 
-    mem_map = {
-        "tool_quote": ("quote", "quote", lambda: twelve_data.get_xau_quote()),
-        "tool_ohlc": (
-            f"ohlc:{interval}",
-            "ohlc_intraday" if interval not in {"1day", "1week", "1month"} else "ohlc_daily",
-            lambda: twelve_data.get_xau_time_series(interval, int(params.get("outputsize", 50))),
+    fetch_map = {
+        "tool_quote": lambda: twelve_data.get_xau_quote(),
+        "tool_ohlc": lambda: twelve_data.get_xau_time_series(
+            interval, int(params.get("outputsize", 50))
         ),
-        "tool_rsi": (f"rsi:{interval}", "indicator", lambda: twelve_data.get_xau_rsi(interval)),
-        "tool_sma": (f"sma:{interval}", "indicator", lambda: twelve_data.get_xau_sma(interval)),
-        "tool_ema": (f"ema:{interval}", "indicator", lambda: twelve_data.get_xau_ema(interval)),
-        "tool_macd": (f"macd:{interval}", "indicator", lambda: twelve_data.get_xau_macd(interval)),
-        "tool_atr": (f"atr:{interval}", "indicator", lambda: twelve_data.get_xau_atr(interval)),
+        "tool_rsi": lambda: twelve_data.get_xau_rsi(interval),
+        "tool_sma": lambda: twelve_data.get_xau_sma(interval),
+        "tool_ema": lambda: twelve_data.get_xau_ema(interval),
+        "tool_macd": lambda: twelve_data.get_xau_macd(interval),
+        "tool_atr": lambda: twelve_data.get_xau_atr(interval),
     }
 
     if kind == "tool_macro_snapshot":
         from app.tools import fred
-        cached, freshness, _ = await stm.get_fresh(conversation_id, "macro_snapshot")
-        if cached is None:
-            cached, freshness, _ = await stm.get_fresh("global", "macro_snapshot")
-        if cached is None:
-            cached = await fred.get_macro_snapshot()
-            await stm.put(conversation_id, "macro_snapshot", cached, "macro_snapshot")
-            await stm.put("global", "macro_snapshot", cached, "macro_snapshot")
-            freshness = "FRESH"
-        logger.info("timing %s elapsed=%.3fs memory=%s", kind, time.perf_counter() - t0, freshness)
+        data = await fred.get_macro_snapshot()
+        logger.info("timing %s elapsed=%.3fs", kind, time.perf_counter() - t0)
         await emit(_sse("direct_tool_completed", kind, "Done"))
-        return {"kind": kind, "data": cached, "freshness": freshness, "from_memory": freshness is not None}
+        return {"kind": kind, "data": data, "freshness": "FRESH", "from_memory": False}
 
-    if kind not in mem_map:
+    if kind not in fetch_map:
         await emit(_sse("direct_tool_completed", kind, "Unknown tool"))
         return {"kind": kind, "error": "unknown tool"}
 
-    mem_key, stm_kind, fetcher = mem_map[kind]
-    cached, freshness, _ = await stm.get_fresh(conversation_id, mem_key)
-    if cached is None and kind == "tool_quote":
-        cached, freshness, _ = await stm.get_fresh("global", mem_key)
-    from_memory = cached is not None
-    if cached is None:
-        cached = await fetcher()
-        await stm.put(conversation_id, mem_key, cached, stm_kind)
-        if kind == "tool_quote":
-            await stm.put("global", mem_key, cached, stm_kind)
-        freshness = "FRESH"
-    logger.info(
-        "timing %s elapsed=%.3fs from_memory=%s",
-        kind,
-        time.perf_counter() - t0,
-        from_memory,
-    )
+    data = await fetch_map[kind]()
+    logger.info("timing %s elapsed=%.3fs", kind, time.perf_counter() - t0)
     await emit(_sse("direct_tool_completed", kind, "Done"))
-    return {"kind": kind, "data": cached, "freshness": freshness, "from_memory": from_memory}
+    return {"kind": kind, "data": data, "freshness": "FRESH", "from_memory": False}
 
 
 async def _execute_tasks(
@@ -715,22 +725,6 @@ async def _execute_tasks(
             start = time.perf_counter()
             try:
                 if task.kind == "agent_news":
-                    # STM reuse
-                    cached, freshness, _ = await stm.get_fresh(conversation_id, "specialist_news")
-                    if cached and freshness in {"FRESH", "ACCEPTABLE"} and not trade_mode:
-                        pool.specialist_outputs["news"] = cached
-                        pool.memory_hits.append("specialist_news")
-                        pool.add(EvidenceItem(
-                            evidence_id=f"mem_news_{task.id}",
-                            category=EvidenceCategory.MEMORY,
-                            source="stm",
-                            claim="Reused fresh news specialist output",
-                            data=cached if isinstance(cached, dict) else {},
-                            freshness=freshness or "FRESH",
-                        ))
-                        await emit(_sse("news_agent_started", "news_agent", "Reusing memory"))
-                        await emit(_sse("news_agent_completed", "news_agent", "From memory"))
-                        return
                     payload = {
                         "query": query,
                         "horizon": horizon,
@@ -741,17 +735,8 @@ async def _execute_tasks(
                     }
                     out = await _run_news_specialist("news_agent", news_agent, payload, emit)
                     if out:
-                        dumped = _dump(out)
-                        pool.specialist_outputs["news"] = dumped
-                        await stm.put(conversation_id, "specialist_news", dumped, "specialist_news", trade_mode)
+                        pool.specialist_outputs["news"] = _dump(out)
                 elif task.kind == "agent_fundamental":
-                    cached, freshness, _ = await stm.get_fresh(conversation_id, "specialist_fundamental")
-                    if cached and freshness in {"FRESH", "ACCEPTABLE"} and not trade_mode:
-                        pool.specialist_outputs["fundamental"] = cached
-                        pool.memory_hits.append("specialist_fundamental")
-                        await emit(_sse("fundamental_agent_started", "fundamental_agent", "Reusing memory"))
-                        await emit(_sse("fundamental_agent_completed", "fundamental_agent", "From memory"))
-                        return
                     payload = {
                         "query": query,
                         "horizon": horizon,
@@ -762,24 +747,8 @@ async def _execute_tasks(
                     }
                     out = await _run_fundamental_specialist("fundamental_agent", fundamental_agent, payload, emit)
                     if out:
-                        dumped = _dump(out)
-                        pool.specialist_outputs["fundamental"] = dumped
-                        await stm.put(
-                            conversation_id,
-                            "specialist_fundamental",
-                            dumped,
-                            "specialist_fundamental",
-                            trade_mode,
-                        )
+                        pool.specialist_outputs["fundamental"] = _dump(out)
                 elif task.kind == "agent_technical":
-                    mem_key = "specialist_technical_trade" if trade_mode else "specialist_technical"
-                    cached, freshness, _ = await stm.get_fresh(conversation_id, mem_key)
-                    if cached and freshness == "FRESH" and not trade_mode:
-                        pool.specialist_outputs["technical"] = cached
-                        pool.memory_hits.append(mem_key)
-                        await emit(_sse("technical_agent_started", "technical_agent", "Reusing memory"))
-                        await emit(_sse("technical_agent_completed", "technical_agent", "From memory"))
-                        return
                     payload = {
                         "query": query,
                         "horizon": horizon,
@@ -790,10 +759,7 @@ async def _execute_tasks(
                     }
                     out = await _run_technical_specialist("technical_agent", technical_agent, payload, emit)
                     if out:
-                        dumped = _dump(out)
-                        pool.specialist_outputs["technical"] = dumped
-                        kind = "specialist_technical_trade" if trade_mode else "specialist_technical"
-                        await stm.put(conversation_id, mem_key, dumped, kind, trade_mode)
+                        pool.specialist_outputs["technical"] = _dump(out)
                 elif task.kind.startswith("tool_"):
                     result = await _run_tool_task(task, conversation_id, emit)
                     pool.tool_outputs[task.id or task.kind] = result
@@ -855,46 +821,93 @@ async def run_v2_pipeline(
 
             hist = await history_text(conversation_id)
             hist_msgs = await history_for_manager(conversation_id)
-            prior = await stm.get_thesis(conversation_id)
-            pending = await get_pending_clarification(conversation_id)
-
-            effective_query = query
-            forced_horizon: Horizon | None = None
-            if pending:
-                effective_query = merge_clarification_query(pending["pending_goal"], query)
-                forced_horizon = parse_horizon_from_text(query)
-
-            await emit(_sse("understanding_started", "gate", "Understanding request"))
-            decision = classify_gate(
+            context = await load_conversation_context(
+                conversation_id,
                 query,
                 trade_mode=trade_mode,
-                has_prior_thesis=bool(prior),
-                pending_clarification=bool(pending),
-                pending_goal=(pending or {}).get("pending_goal"),
             )
+            pending = context.get("pending_clarification")
+            clarify_turns = int(context.get("clarification_turn_count") or 0)
+
+            await emit(_sse("understanding_started", "gate", "Understanding request"))
+            decision = await run_conversation_gate(
+                context,
+                query=query,
+                trade_mode=trade_mode,
+                pending=pending,
+            )
+
+            # Cap consecutive clarifications — cancel without inventing fields
+            if (
+                decision.action == GateRoute.CLARIFY
+                and clarify_turns >= settings.max_clarification_turns
+            ):
+                decision = apply_clarification_limit(decision, pending, query)
+
+            gate_diag = gate_diagnostics(decision)
             await emit(_sse(
                 "understanding_completed",
                 "gate",
                 decision.reason,
                 {
-                    "route": decision.route.value,
+                    "route": decision.action.value,
                     "complexity": decision.complexity.value,
                     "pending_clarification": bool(pending),
-                    "effective_query": effective_query if pending else None,
+                    "normalized_query": decision.normalized_query,
+                    "resolved_fields": decision.resolved_fields,
+                    "missing_fields": decision.missing_fields,
+                    "context_relationship": gate_diag.get("context_relationship"),
+                    "repair_used": gate_diag.get("repair_used"),
+                    "emergency_fallback": gate_diag.get("emergency_fallback"),
                 },
             ))
 
-            # --- Chat / off-topic ---
-            if decision.route == GateRoute.GENERAL_CHAT:
-                await _handle_direct_chat(query, conversation_id, hist, "general_chat", emit)
+            # Clarification limit cancel (GENERAL_CHAT with fixed message)
+            if decision.reason == "clarification_limit_cancelled":
+                await _handle_direct_chat(
+                    query,
+                    conversation_id,
+                    hist,
+                    "general_chat",
+                    emit,
+                    decision=decision,
+                    answer_override=CLARIFICATION_LIMIT_MESSAGE,
+                )
                 return
-            if decision.route == GateRoute.OFF_TOPIC:
-                await _handle_direct_chat(query, conversation_id, hist, "off_topic", emit)
+
+            # --- Chat / off-topic ---
+            if decision.action == GateRoute.GENERAL_CHAT:
+                await _handle_direct_chat(
+                    query, conversation_id, hist, "general_chat", emit, decision=decision
+                )
+                return
+            if decision.action == GateRoute.OFF_TOPIC:
+                await _handle_direct_chat(
+                    query, conversation_id, hist, "off_topic", emit, decision=decision
+                )
                 return
 
             # --- Clarification ---
-            if decision.route == GateRoute.CLARIFY and decision.clarification_question:
+            if decision.action == GateRoute.CLARIFY and decision.clarification_question:
                 await emit(_sse("chat_response", message="Clarification"))
+                original_query = (
+                    (pending or {}).get("original_query")
+                    or (pending or {}).get("pending_goal")
+                    or query
+                )
+                # Independent messages cancel pending — only keep original when clarifying
+                if decision.context_relationship.value == "CLARIFICATION_ANSWER" and pending:
+                    original_query = (
+                        pending.get("original_query")
+                        or pending.get("pending_goal")
+                        or query
+                    )
+                elif decision.context_relationship.value == "INDEPENDENT":
+                    original_query = query
+                prev_q = (
+                    (pending or {}).get("previous_clarification_question")
+                    or (pending or {}).get("clarification")
+                )
                 await _emit_complete_answer(
                     decision.clarification_question,
                     conversation_id,
@@ -902,42 +915,100 @@ async def run_v2_pipeline(
                     emit,
                     metadata={
                         "route": "clarify",
-                        "pending_goal": query,
-                        "missing": ["horizon"],
+                        "action": "clarify",
+                        "original_query": original_query,
+                        "pending_goal": original_query,
+                        "resolved_fields": decision.resolved_fields,
+                        "missing_fields": decision.missing_fields,
+                        "missing": decision.missing_fields,
+                        "previous_clarification_question": prev_q,
+                        "purpose": decision.purpose.value if decision.purpose else None,
+                        "intent": decision.intent.value if decision.intent else None,
+                        "analysis_scopes": [
+                            s.value if hasattr(s, "value") else s
+                            for s in (decision.analysis_scopes or [])
+                        ],
+                        "horizon": decision.horizon.value if decision.horizon else None,
+                        "clarification_turn": clarify_turns + 1,
+                        "gate": gate_diag,
                     },
                 )
                 return
 
             # --- Fast path ---
-            if decision.route == GateRoute.FAST:
+            if decision.action == GateRoute.FAST:
                 await emit(_sse("fast_path", message="Fast path", data={"kind": decision.fast_kind}))
                 await emit(_sse("chat_response", message="Fast path"))
-                answer = await _execute_fast(decision, conversation_id, emit)
-                await _emit_complete_answer(
-                    answer,
-                    conversation_id,
-                    query,
-                    emit,
-                    metadata={"route": "fast", "fast_kind": decision.fast_kind},
-                )
-                return
+                try:
+                    answer = await _execute_fast(decision, conversation_id, emit)
+                    await _emit_complete_answer(
+                        answer,
+                        conversation_id,
+                        query,
+                        emit,
+                        metadata={
+                            "route": "fast",
+                            "fast_kind": decision.fast_kind,
+                            "gate": gate_diag,
+                        },
+                    )
+                    return
+                except Exception as exc:
+                    logger.warning("FAST path failed (staying on FAST, no Manager): %s", exc)
+                    kind = decision.fast_kind or "quote"
+                    unavailable = (
+                        f"I couldn't retrieve the current XAU/USD {kind} data right now. "
+                        "Please try again in a moment."
+                    )
+                    await _emit_complete_answer(
+                        unavailable,
+                        conversation_id,
+                        query,
+                        emit,
+                        metadata={
+                            "route": "fast",
+                            "fast_kind": kind,
+                            "fast_error": str(exc),
+                            "gate": gate_diag,
+                        },
+                    )
+                    return
 
-            # --- Research / Manager path ---
-            await emit(_sse("memory_check_started", "memory", "Checking short-term memory"))
-            stm_summary = await stm.summary_for_prompt(conversation_id)
-            await emit(_sse("memory_check_completed", "memory", f"{len(stm_summary.get('hits', []))} hits", stm_summary))
+            # --- STANDARD / RESEARCH Manager path ---
+            if decision.action not in {GateRoute.STANDARD, GateRoute.RESEARCH}:
+                # Safety: treat anything else as STANDARD
+                decision = decision.model_copy(
+                    update={
+                        "action": GateRoute.STANDARD,
+                        "complexity": ComplexityLevel.STANDARD,
+                        "normalized_query": decision.normalized_query or query,
+                    }
+                )
+
+            effective_query = (decision.normalized_query or query).strip()
+            gate_complexity = (
+                ComplexityLevel.RESEARCH
+                if decision.action == GateRoute.RESEARCH
+                else ComplexityLevel.STANDARD
+            )
 
             await emit(_sse("planning_started", "gold_manager", "Planning research"))
             plan_input = _dumps({
-                "query": effective_query,
+                "normalized_query": effective_query,
                 "original_user_message": query,
+                "intent": decision.intent.value if decision.intent else None,
+                "analysis_scopes": [
+                    s.value if hasattr(s, "value") else s for s in (decision.analysis_scopes or [])
+                ],
+                "purpose": decision.purpose.value if decision.purpose else None,
+                "horizon": decision.horizon.value if decision.horizon else None,
+                "resolved_fields": decision.resolved_fields,
                 "trade_mode": trade_mode,
-                "suggested_complexity": decision.complexity.value,
-                "conversation": hist_msgs[-8:],
-                "short_term_memory": stm_summary,
-                "prior_thesis": prior,
-                "pending_clarification_resolved": bool(pending),
-                "forced_horizon": forced_horizon.value if forced_horizon else None,
+                "suggested_complexity": gate_complexity.value,
+                "rolling_summary": context.get("rolling_summary"),
+                "recent_messages": hist_msgs[-settings.recent_messages_limit :],
+                "is_follow_up": decision.is_follow_up,
+                "gate_reason": decision.reason,
             })
             try:
                 plan_raw = await _run_agent(gold_manager_plan_agent, plan_input)
@@ -946,32 +1017,30 @@ async def run_v2_pipeline(
                 logger.warning("Manager plan failed, using fallback: %s", exc)
                 plan = _default_plan_from_gate(effective_query, decision, trade_mode)
 
-            if forced_horizon is not None:
-                plan = plan.model_copy(update={
-                    "horizon": forced_horizon,
-                    "clarification_question": None,
-                })
-                if not plan.goal:
-                    plan = plan.model_copy(update={"goal": effective_query})
+            # Stick Gate complexity / horizon onto the plan
+            plan_updates: dict[str, Any] = {
+                "complexity": gate_complexity,
+                "clarification_question": None,
+            }
+            if decision.horizon is not None:
+                plan_updates["horizon"] = decision.horizon
+            if not plan.goal:
+                plan_updates["goal"] = effective_query
+            plan = plan.model_copy(update=plan_updates)
 
-            if plan.clarification_question and not plan.tasks and not plan.use_prior_thesis:
-                await emit(_sse("planning_completed", "gold_manager", "Needs clarification", _dump(plan)))
-                await emit(_sse("chat_response", message="Clarification"))
-                await _emit_complete_answer(
-                    plan.clarification_question,
-                    conversation_id,
-                    query,
-                    emit,
-                    metadata={
-                        "route": "clarify",
-                        "pending_goal": query,
-                        "missing": ["horizon"],
-                    },
-                )
-                return
+            # If Manager still produced empty tasks, use complexity-aware fallback
+            if not plan.tasks:
+                plan = _default_plan_from_gate(effective_query, decision, trade_mode)
 
-            plan = apply_manager_plan_constraints(plan, effective_query, trade_mode)
-            warnings = validate_manager_plan(plan)
+            plan = apply_manager_plan_constraints(
+                plan,
+                effective_query,
+                trade_mode,
+                analysis_scopes=decision.analysis_scopes,
+            )
+            # Re-assert Gate complexity after policy
+            plan = plan.model_copy(update={"complexity": gate_complexity})
+            warnings = validate_manager_plan(plan, analysis_scopes=decision.analysis_scopes)
             await emit(_sse("planning_completed", "gold_manager", "Done", _dump(plan)))
             await emit(_sse("check_completed", "policy", "Done", {
                 "warnings": warnings,
@@ -980,17 +1049,6 @@ async def run_v2_pipeline(
 
             horizon = plan.horizon if isinstance(plan.horizon, Horizon) else Horizon(plan.horizon)
             pool = EvidencePool()
-
-            # Reuse prior thesis for follow-ups with minimal tasks
-            if plan.use_prior_thesis and prior and not plan.tasks:
-                pool.add(EvidenceItem(
-                    evidence_id="prior_thesis",
-                    category=EvidenceCategory.MEMORY,
-                    source="stm",
-                    claim="Prior thesis",
-                    data=prior,
-                    freshness="ACCEPTABLE",
-                ))
 
             await _execute_tasks(
                 plan.tasks,
@@ -1004,23 +1062,25 @@ async def run_v2_pipeline(
 
             # Bounded replan loop
             for replan_round in range(settings.max_replan_rounds):
-                # Deterministic engines before review
                 specialist_outputs = {
                     k: pool.specialist_outputs.get(k)
                     for k in ("news", "fundamental", "technical")
                 }
-                # Allow empty slots as None
                 for k in ("news", "fundamental", "technical"):
                     specialist_outputs.setdefault(k, pool.specialist_outputs.get(k))
 
-                has_any = any(v for v in specialist_outputs.values()) or pool.tool_outputs or plan.use_prior_thesis
+                has_any = any(v for v in specialist_outputs.values()) or pool.tool_outputs
                 if not has_any and replan_round == 0:
-                    # Force a minimal technical+quote replan
                     await emit(_sse("replan_started", "gold_manager", "No evidence — requesting quote+technical"))
                     await _execute_tasks(
                         [
                             ManagerTask(id=f"re_q_{replan_round}", kind="tool_quote", task="Current quote"),
-                            ManagerTask(id=f"re_t_{replan_round}", kind="agent_technical", task=effective_query, depth="STANDARD"),
+                            ManagerTask(
+                                id=f"re_t_{replan_round}",
+                                kind="agent_technical",
+                                task=effective_query,
+                                depth="STANDARD",
+                            ),
                         ],
                         query=effective_query,
                         horizon=horizon.value,
@@ -1038,9 +1098,9 @@ async def run_v2_pipeline(
                         _dumps({
                             "query": effective_query,
                             "horizon": horizon.value,
+                            "complexity": gate_complexity.value,
                             "specialist_outputs": pool.specialist_outputs,
                             "tool_outputs": pool.tool_outputs,
-                            "memory_hits": pool.memory_hits,
                             "replan_round": replan_round,
                             "max_replan_rounds": settings.max_replan_rounds,
                         }),
@@ -1055,6 +1115,10 @@ async def run_v2_pipeline(
                     break
                 if replan_round >= settings.max_replan_rounds - 1:
                     break
+                # STANDARD: allow at most one small replan wave
+                if gate_complexity == ComplexityLevel.STANDARD and replan_round >= 0:
+                    if len(review.replan_tasks) > 2:
+                        review = review.model_copy(update={"replan_tasks": review.replan_tasks[:2]})
                 await emit(_sse("replan_started", "gold_manager", f"Replan round {replan_round + 1}"))
                 await _execute_tasks(
                     review.replan_tasks,
@@ -1071,7 +1135,7 @@ async def run_v2_pipeline(
                 "fundamental": pool.specialist_outputs.get("fundamental"),
                 "technical": pool.specialist_outputs.get("technical"),
             }
-            if not any(v for v in specialist_outputs.values()) and not pool.tool_outputs and not prior:
+            if not any(v for v in specialist_outputs.values()) and not pool.tool_outputs:
                 await emit(_sse("error", message="Insufficient reliable evidence to produce analysis"))
                 return
 
@@ -1091,12 +1155,11 @@ async def run_v2_pipeline(
                         "query": effective_query,
                         "horizon": horizon.value,
                         "trade_mode": trade_mode,
+                        "complexity": gate_complexity.value,
                         "specialist_outputs": specialist_outputs,
                         "tool_outputs": pool.tool_outputs,
                         "agent_conflicts": _dump(conflict_analysis),
                         "economic_surprises": economic_surprises,
-                        "prior_thesis": prior,
-                        "memory_hits": pool.memory_hits,
                     }),
                 )
                 synthesis = syn_raw if isinstance(syn_raw, SynthesisOutput) else SynthesisOutput(**_dump(syn_raw))
@@ -1128,7 +1191,6 @@ async def run_v2_pipeline(
                 "specialist_outputs": specialist_outputs,
                 "economic_surprises": economic_surprises,
             })
-            suffix = ""
             try:
                 answer_text = await _stream_agent_text(
                     gold_manager_answer_agent,
@@ -1158,16 +1220,18 @@ async def run_v2_pipeline(
             }))
 
             await repositories.add_message(conversation_id, "user", query)
-            await repositories.add_message(conversation_id, "assistant", answer_text, {
-                "synthesis": _dump(synthesis),
-                "specialist_outputs": specialist_outputs,
-            })
-            await stm.put_thesis(conversation_id, {
-                "query": effective_query,
-                "horizon": horizon.value,
-                "synthesis": _dump(synthesis),
-                "answer_excerpt": answer_text[:500],
-            })
+            await repositories.add_message(
+                conversation_id,
+                "assistant",
+                answer_text,
+                {
+                    "route": decision.action.value.lower(),
+                    "synthesis": _dump(synthesis),
+                    "specialist_outputs": specialist_outputs,
+                    "gate": gate_diag,
+                },
+            )
+            schedule_summary_update(conversation_id)
         except Exception as exc:
             logger.exception("V2 pipeline failed")
             await emit(_sse("error", message=str(exc)))

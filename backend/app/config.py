@@ -63,19 +63,16 @@ class Settings(BaseSettings):
     cache_fred_ttl: int = 3600
     cache_tavily_ttl: int = 1200
 
-    stm_quote_ttl: int = 15
-    stm_ohlc_intraday_ttl: int = 60
-    stm_ohlc_daily_ttl: int = 1800
-    stm_indicator_ttl: int = 300
-    stm_fred_ttl: int = 3600
-    stm_news_ttl: int = 1200
-    stm_economic_release_ttl: int = 21600
-    stm_specialist_ttl: int = 900
-    stm_thesis_ttl: int = 1800
-    stm_trade_specialist_ttl: int = 300
+    # Conversation Gate / Summarizer (optional overrides → fast_model)
+    conversation_gate_model: str = ""
+    conversation_summary_model: str = ""
+    recent_messages_limit: int = 20
+    conversation_summary_batch_size: int = 20
+    max_clarification_turns: int = 3
+    conversation_gate_max_retries: int = 1
 
     max_replan_rounds: int = 2
-    session_history_limit: int = 16
+    session_history_limit: int = 20
 
     @field_validator(
         "openai_api_key",
@@ -108,6 +105,11 @@ class Settings(BaseSettings):
         object.__setattr__(self, "planner_model", self.planner_model or self.manager_model)
         object.__setattr__(self, "synthesis_model", self.synthesis_model or self.manager_model)
         object.__setattr__(self, "answer_model", self.answer_model or self.fast_model)
+
+        gate_model = self.conversation_gate_model or self.fast_model
+        summary_model = self.conversation_summary_model or self.fast_model
+        object.__setattr__(self, "conversation_gate_model", gate_model)
+        object.__setattr__(self, "conversation_summary_model", summary_model)
         return self
 
 

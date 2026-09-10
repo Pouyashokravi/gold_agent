@@ -52,7 +52,7 @@
 | **Trader Mode** | Live candlestick chart with annotated levels |
 | **Economic surprise** | Actual vs forecast parsing with gold bias interpretation |
 | **Multi-language input** | English and Persian queries supported |
-| **Conversation memory** | Last 8 messages used for follow-up context |
+| **Conversation memory** | Full history + recent messages + rolling summary (per conversation) |
 | **Off-topic handling** | Polite redirect for non-gold questions |
 
 ---
@@ -71,14 +71,15 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         BACKEND (FastAPI)                               │
 │                                                                         │
-│  Gate: FAST / CLARIFY / CHAT / RESEARCH                                 │
-│    ├─ FAST → STM / direct tools → answer                                │
-│    └─ RESEARCH → Gold Manager (plan → parallel agents+tools →           │
+│  Conversation Gate LLM: GENERAL_CHAT / OFF_TOPIC / CLARIFY / FAST /     │
+│    STANDARD / RESEARCH                                                  │
+│    ├─ FAST → direct provider tools (API cache) → answer                 │
+│    └─ STANDARD/RESEARCH → Gold Manager (plan → parallel agents+tools →  │
 │         evidence → surprise/conflict → review/replan → answer)          │
 │                                                                         │
 │  Specialists: News │ Fundamental │ Technical (domain experts)           │
 │  Data: Twelve Data │ FRED │ Tavily                                      │
-│  Memory: Conversation (SQLite messages) ≠ Short-term working memory     │
+│  Memory: Full history + recent messages + rolling summary (per chat)    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -89,10 +90,10 @@
 | **Presentation** | `frontend/` | Chat UI, trader desk, chart rendering, SSE consumption |
 | **API** | `backend/app/api/` | HTTP endpoints, SSE streaming |
 | **Orchestration** | `backend/app/services/manager_runtime.py` | V2 Gold Manager runtime |
-| **Gate** | `backend/app/services/gate.py` | Fast path / clarification / chat routing |
-| **Agents** | `backend/app/agents/` | Gold Manager + domain specialists |
+| **Conversation Gate** | `backend/app/services/conversation_gate.py` | LLM routing before Manager (`gate.py` = emergency fallback) |
+| **Agents** | `backend/app/agents/` | Gate, Summarizer, Gold Manager + domain specialists |
 | **Policy** | `backend/app/services/policy.py` | Deterministic hard constraints on plans |
-| **Working memory** | `backend/app/services/working_memory.py` | Freshness-aware data reuse |
+| **Conversation memory** | `backend/app/services/conversation_memory.py` | Rolling summary maintenance |
 | **Scoring** | `backend/app/services/` | Economic surprise, news impact, conflict |
 | **Tools** | `backend/app/tools/` | External API wrappers with caching |
 | **Schemas** | `backend/app/schemas/` | Pydantic data models |

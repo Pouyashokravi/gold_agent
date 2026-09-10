@@ -48,10 +48,13 @@ async def init_db() -> None:
                 month_key TEXT PRIMARY KEY,
                 count INTEGER NOT NULL DEFAULT 0
             );
-            CREATE TABLE IF NOT EXISTS api_cache (
-                cache_key TEXT PRIMARY KEY,
-                value_json TEXT NOT NULL,
-                expires_at REAL NOT NULL
+            CREATE TABLE IF NOT EXISTS conversation_memories (
+                conversation_id TEXT PRIMARY KEY,
+                summary_json TEXT NOT NULL,
+                last_summarized_message_id INTEGER,
+                summarized_message_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id)
             );
             """
         )
